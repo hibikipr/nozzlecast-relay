@@ -1,0 +1,18 @@
+services:
+  nozzlecast-relay:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NTFY_SERVER: "https://ntfy.townsville.cc"
+      NTFY_TOPIC: "townsville-3dprinter"
+      NTFY_AUTH_TOKEN: "${NTFY_AUTH_TOKEN}"
+      RELAY_AUTH_SECRET: "${RELAY_AUTH_SECRET}"
+      APNS_KEY_PATH: "/secrets/AuthKey.p8"
+      APNS_KEY_ID: "${APNS_KEY_ID}"
+      APNS_TEAM_ID: "89863526TH"
+      APNS_BUNDLE_ID: "com.victormanuel.NozzleCast"
+    volumes:
+      - ./data:/data
+      - ./secrets/AuthKey.p8:/secrets/AuthKey.p8:ro
