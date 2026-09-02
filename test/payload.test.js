@@ -24,7 +24,7 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   ].sort());
   assert.equal(state.progress, 0);
   assert.equal(state.stateLabel, 'Printing');
-  assert.equal(state.startedAt, now.toISOString());
+  assert.equal(state.startedAt, '2026-09-02T13:23:34Z');
   assert.equal(state.jobName, null);
   assert.equal(state.estimatedEndAt, null);
   assert.equal(state.currentLayer, null);
@@ -33,6 +33,17 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   assert.equal(state.bedTempC, null);
   assert.equal(state.coverImage, null);
   assert.equal(state.liveSnapshot, null);
+});
+
+test('buildPushToStartPayload strips fractional seconds from startedAt', () => {
+  // Date.toISOString() includes milliseconds ("...34.789Z"); Swift's JSONDecoder .iso8601
+  // strategy -- which ActivityKit uses to decode a push-to-start payload's content-state --
+  // does not parse that by default. A device silently fails to create the Live Activity if
+  // this isn't stripped, with no error surfaced anywhere (confirmed against a real deploy:
+  // APNs accepted every push cleanly, but nothing ever rendered, until this was fixed).
+  const now = new Date('2026-09-02T13:23:34.789Z');
+  const payload = buildPushToStartPayload({ printerID: 'vich2c', printerName: 'Vic H2C', now });
+  assert.equal(payload.aps['content-state'].startedAt, '2026-09-02T13:23:34Z');
 });
 
 test('buildPushToStartPayload defaults now to the current time', () => {
