@@ -151,3 +151,95 @@ test('NtfyWatcher sends the auth token as a Bearer header', async () => {
   assert.equal(capturedUrl, 'https://ntfy.townsville.cc/townsville-3dprinter/sse');
   assert.equal(capturedHeaders.Authorization, 'Bearer tk_test');
 });
+
+test('NtfyWatcher aborts the in-flight connection when stop() is called', async () => {
+  let capturedSignal = null;
+  const fetchImpl = async (url, options) => {
+    capturedSignal = options.signal;
+    return new Promise(() => {}); // hang, simulating a still-open connection
+  };
+
+  const watcher = new NtfyWatcher({
+    server: 'https://ntfy.townsville.cc',
+    topic: 'townsville-3dprinter',
+    authToken: 'tk_test',
+    onMessage: () => {},
+    fetchImpl,
+    backoff: { minMs: 5, maxMs: 10 },
+  });
+
+  watcher.start();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.ok(capturedSignal, 'expected fetchImpl to receive an AbortSignal');
+  assert.equal(capturedSignal.aborted, false);
+
+  watcher.stop();
+
+  assert.equal(capturedSignal.aborted, true);
+});
+
+test('NtfyWatcher clears the pending backoff timer on stop() so shutdown is prompt', async () => {
+  const fetchImpl = async () => fakeStreamResponse([]); // stream ends immediately, every time
+
+  const watcher = new NtfyWatcher({
+    server: 'https://ntfy.townsville.cc',
+    topic: 'townsville-3dprinter',
+    authToken: 'tk_test',
+    onMessage: () => {},
+    fetchImpl,
+    backoff: { minMs: 300, maxMs: 300 },
+  });
+
+  const loopPromise = watcher._connectLoop();
+  // Let the first connection happen, end, and enter the backoff sleep.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const stopStartedAt = Date.now();
+  watcher.stop();
+  await loopPromise;
+  const elapsedMs = Date.now() - stopStartedAt;
+
+  assert.ok(
+    elapsedMs < 100,
+    `expected stop() to resolve the pending backoff promptly, took ${elapsedMs}ms (backoff was 300ms)`
+  );
+});
+
+test('NtfyWatcher does not reset backoff after a non-ok HTTP response', async () => {
+  const callTimestamps = [];
+  const fetchImpl = async () => {
+    callTimestamps.push(Date.now());
+    return {
+      ok: false,
+      status: 401,
+      body: {
+        async *[Symbol.asyncIterator]() {},
+      },
+    };
+  };
+
+  const watcher = new NtfyWatcher({
+    server: 'https://ntfy.townsville.cc',
+    topic: 'townsville-3dprinter',
+    authToken: 'tk_test',
+    onMessage: () => {},
+    fetchImpl,
+    backoff: { minMs: 15, maxMs: 1000 },
+  });
+
+  watcher.start();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  watcher.stop();
+
+  assert.ok(
+    callTimestamps.length >= 3,
+    `expected at least 3 connection attempts, got ${callTimestamps.length}`
+  );
+  const gap1 = callTimestamps[1] - callTimestamps[0];
+  const gap2 = callTimestamps[2] - callTimestamps[1];
+  assert.ok(
+    gap2 > gap1 * 1.4,
+    `expected the backoff gap to keep growing (not reset to minMs) after a non-ok response, got gap1=${gap1}ms gap2=${gap2}ms`
+  );
+});

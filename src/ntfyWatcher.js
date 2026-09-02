@@ -28,6 +28,8 @@ class NtfyWatcher {
     this.maxBackoffMs = backoff.maxMs ?? 30000;
     this.stopped = false;
     this.currentBackoffMs = this.minBackoffMs;
+    this.abortController = null;
+    this._cancelSleep = null;
   }
 
   start() {
@@ -37,6 +39,12 @@ class NtfyWatcher {
 
   stop() {
     this.stopped = true;
+    if (this.abortController) {
+      this.abortController.abort();
+    }
+    if (this._cancelSleep) {
+      this._cancelSleep();
+    }
   }
 
   async _connectLoop() {
@@ -55,9 +63,15 @@ class NtfyWatcher {
 
   async _connectOnce() {
     const url = `${this.server}/${this.topic}/sse`;
+    this.abortController = new AbortController();
     const response = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${this.authToken}` },
+      signal: this.abortController.signal,
     });
+
+    if (!response.ok) {
+      throw new Error(`ntfy connection failed with status ${response.status}`);
+    }
 
     let remainder = '';
     for await (const chunk of response.body) {
@@ -73,7 +87,17 @@ class NtfyWatcher {
   }
 
   _sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        this._cancelSleep = null;
+        resolve();
+      }, ms);
+      this._cancelSleep = () => {
+        clearTimeout(timeoutId);
+        this._cancelSleep = null;
+        resolve();
+      };
+    });
   }
 }
 
