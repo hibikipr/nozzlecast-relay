@@ -44,3 +44,7 @@ test('normalizedID lowercases and strips non-alphanumerics so both name forms ma
   assert.equal(normalizedID(''), '');
   assert.equal(normalizedID(undefined), '');
 });
+
+test('normalizedID is Unicode-aware, keeping accented letters like the Swift original', () => {
+  assert.equal(normalizedID('Émile'), 'émile');
+});

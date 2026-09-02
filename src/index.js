@@ -28,16 +28,35 @@ async function main() {
   // key/kid/team-id combination gets a 400 BadDeviceToken (auth succeeded, token just isn't
   // real); a misconfigured one gets 403 InvalidProviderToken. Fail loudly now rather than
   // silently dropping every future push-to-start request.
-  const authCheck = await apnsClient.send({
-    token: '0'.repeat(64),
-    environment: 'production',
-    payload: buildPushToStartPayload({ printerID: 'startup-check', printerName: 'startup-check' }),
-  });
-  if (authCheck.status === 403) {
-    console.error(`APNs auth check failed (403 ${authCheck.body}) — check APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_PATH`);
-    process.exit(1);
+  //
+  // This check is best-effort: it must never block startup. A hung TCP/TLS connection to Apple
+  // (ApnsClient has no per-request timeout) would otherwise stall server.listen() forever, and a
+  // thrown error (e.g. DNS not yet resolvable in a fresh container) would otherwise propagate to
+  // main().catch() and exit(1), turning a transient network hiccup into a crash-loop. We only
+  // exit on a definitive, successfully-received 403 — an unambiguous "your credentials are
+  // wrong" answer from Apple.
+  const AUTH_CHECK_TIMEOUT_MS = 10000;
+  try {
+    const authCheckResult = await Promise.race([
+      apnsClient.send({
+        token: '0'.repeat(64),
+        environment: 'production',
+        payload: buildPushToStartPayload({ printerID: 'startup-check', printerName: 'startup-check' }),
+      }).then((result) => ({ timedOut: false, result })),
+      new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), AUTH_CHECK_TIMEOUT_MS)),
+    ]);
+
+    if (authCheckResult.timedOut) {
+      console.error(`APNs auth check timed out after ${AUTH_CHECK_TIMEOUT_MS}ms — continuing startup anyway`);
+    } else if (authCheckResult.result.status === 403) {
+      console.error(`APNs auth check failed (403 ${authCheckResult.result.body}) — check APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_PATH`);
+      process.exit(1);
+    } else {
+      console.log(`APNs auth check passed (status ${authCheckResult.result.status}, as expected for a fake device token)`);
+    }
+  } catch (error) {
+    console.error('APNs auth check threw (network/DNS issue?) — continuing startup anyway:', error);
   }
-  console.log(`APNs auth check passed (status ${authCheck.status}, as expected for a fake device token)`);
 
   const onNtfyMessage = async (message) => {
     if (!isStartEvent(message.title || '')) return;

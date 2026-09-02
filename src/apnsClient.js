@@ -15,15 +15,37 @@ class ApnsClient {
       : 'https://api.push.apple.com';
 
     const session = this.connect(origin);
+    let sessionErrored = false;
     try {
       return await this._sendOnSession(session, { token, payload });
+    } catch (error) {
+      sessionErrored = true;
+      throw error;
     } finally {
-      session.close();
+      if (sessionErrored) {
+        session.destroy();
+      } else {
+        session.close();
+      }
     }
   }
 
   _sendOnSession(session, { token, payload }) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const settleReject = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const settleResolve = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      session.on('error', settleReject);
+
       const body = JSON.stringify(payload);
       const stream = session.request({
         ':method': 'POST',
@@ -46,14 +68,14 @@ class ApnsClient {
         responseBody += chunk.toString();
       });
       stream.on('end', () => {
-        resolve({
+        settleResolve({
           ok: status >= 200 && status < 300,
           status,
           shouldRemoveToken: REMOVABLE_STATUSES.has(status),
           body: responseBody,
         });
       });
-      stream.on('error', reject);
+      stream.on('error', settleReject);
 
       stream.end(body);
     });

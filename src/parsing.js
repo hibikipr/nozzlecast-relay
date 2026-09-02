@@ -11,7 +11,7 @@ function printerName(message) {
 }
 
 function normalizedID(name) {
-  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (name || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 module.exports = { isStartEvent, printerName, normalizedID };

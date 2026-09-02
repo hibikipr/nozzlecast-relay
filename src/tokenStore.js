@@ -17,6 +17,11 @@ class TokenStore {
         this.tokens = new Map();
         return;
       }
+      if (error instanceof SyntaxError || error instanceof TypeError) {
+        console.error(`tokens.json is corrupt (${error.message}); starting with an empty token list`);
+        this.tokens = new Map();
+        return;
+      }
       throw error;
     }
   }
@@ -42,7 +47,9 @@ class TokenStore {
 
   async save() {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(this.list(), null, 2), 'utf8');
+    const tmpPath = `${this.filePath}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(this.list(), null, 2), 'utf8');
+    await fs.rename(tmpPath, this.filePath);
   }
 }
 

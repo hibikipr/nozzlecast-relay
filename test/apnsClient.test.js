@@ -95,3 +95,37 @@ test('send() does not mark a 500 response for removal', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.shouldRemoveToken, false);
 });
+
+test('send() rejects instead of crashing when the HTTP/2 session itself emits an error', async () => {
+  let destroyed = false;
+  let closed = false;
+  const connect = () => {
+    const session = new EventEmitter();
+    session.close = () => {
+      closed = true;
+    };
+    session.destroy = () => {
+      destroyed = true;
+    };
+    session.request = () => {
+      const stream = new EventEmitter();
+      stream.end = () => {
+        // Never emits a stream response — instead the session itself errors out,
+        // simulating a DNS failure / TLS failure / network hiccup at the session level.
+        process.nextTick(() => {
+          session.emit('error', new Error('session error: getaddrinfo ENOTFOUND'));
+        });
+      };
+      return stream;
+    };
+    return session;
+  };
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+
+  await assert.rejects(
+    client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } }),
+    /session error/,
+  );
+  assert.equal(destroyed, true);
+  assert.equal(closed, false);
+});

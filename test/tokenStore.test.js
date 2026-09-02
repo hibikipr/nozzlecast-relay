@@ -59,6 +59,14 @@ test('remove() deletes a token and persists the change', async () => {
   assert.equal(onDisk.length, 1);
 });
 
+test('load() on a file containing invalid JSON logs a warning and starts with an empty list', async () => {
+  const filePath = await tempFilePath();
+  await fs.writeFile(filePath, '{ this is not valid json ]', 'utf8');
+  const store = new TokenStore(filePath);
+  await assert.doesNotReject(store.load());
+  assert.deepEqual(store.list(), []);
+});
+
 test('load() reads back tokens written by a previous store instance', async () => {
   const filePath = await tempFilePath();
   const first = new TokenStore(filePath);

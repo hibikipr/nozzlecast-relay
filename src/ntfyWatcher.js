@@ -48,11 +48,23 @@ class NtfyWatcher {
   }
 
   async _connectLoop() {
+    let hasConnectedBefore = false;
     while (!this.stopped) {
       try {
         await this._connectOnce();
+        if (hasConnectedBefore) {
+          console.log(`ntfy watcher reconnected to ${this.server}/${this.topic}`);
+        } else {
+          console.log(`ntfy watcher connected to ${this.server}/${this.topic}`);
+        }
+        hasConnectedBefore = true;
         this.currentBackoffMs = this.minBackoffMs; // reset on a clean connect+stream
-      } catch {
+      } catch (error) {
+        if (!this.stopped) {
+          console.error(
+            `ntfy watcher connection attempt failed: ${error && error.message ? error.message : error}; retrying in ${this.currentBackoffMs}ms`,
+          );
+        }
         // fall through to backoff/retry below
       }
       if (this.stopped) return;
