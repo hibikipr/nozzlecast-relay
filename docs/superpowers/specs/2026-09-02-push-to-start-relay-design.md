@@ -144,11 +144,22 @@ Environment variables:
 | `NTFY_TOPIC` | Topic to subscribe to |
 | `NTFY_AUTH_TOKEN` | ntfy auth token |
 | `RELAY_AUTH_SECRET` | Bearer secret required on `/register` and `DELETE /register` |
-| `APNS_KEY_PATH` | Path to the mounted `.p8` auth key |
-| `APNS_KEY_ID` | Apple APNs auth key ID |
-| `APNS_TEAM_ID` | Apple Developer Team ID (`89863526TH`) |
+| `APNS_KEY_PATH` | Path to the mounted **production** `.p8` auth key |
+| `APNS_KEY_ID` | Production APNs auth key ID |
+| `APNS_SANDBOX_KEY_PATH` | Path to the mounted **sandbox/development** `.p8` auth key |
+| `APNS_SANDBOX_KEY_ID` | Sandbox APNs auth key ID |
+| `APNS_TEAM_ID` | Apple Developer Team ID (`89863526TH`), shared by both keys |
 | `APNS_BUNDLE_ID` | `com.victormanuel.NozzleCast` (topic is derived by appending
   `.push-type.liveactivity`) |
+
+**Post-implementation update (2026-09-02):** the original design assumed one APNs auth key
+covers both environments, per Apple's general documentation. Confirmed against a real deploy that
+this doesn't hold universally: a production-scoped key's JWT was rejected with a 403
+`BadEnvironmentKeyInToken` (an auth-tier error, not a device-token-tier one like `BadDeviceToken`)
+when presented to `api.sandbox.push.apple.com`, while the identical JWT sent to
+`api.push.apple.com` succeeded (got the expected 400 `BadDeviceToken` for the startup check's fake
+token). The relay now holds two `ApnsClient`/`ApnsAuthProvider` pairs, one per environment, and
+selects between them per-token based on that token's stored `environment` at registration time.
 
 Volume: `/data` (holds `tokens.json`).
 

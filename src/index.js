@@ -16,18 +16,36 @@ async function main() {
   const tokenStore = new TokenStore(path.join(config.dataDir, 'tokens.json'));
   await tokenStore.load();
 
-  const authProvider = new ApnsAuthProvider({
-    keyPath: config.apnsKeyPath,
-    keyId: config.apnsKeyId,
-    teamId: config.apnsTeamId,
-  });
-  const apnsClient = new ApnsClient({ authProvider, topic: config.apnsTopic });
+  // Apple APNs auth keys are ordinarily environment-agnostic, but confirmed empirically against
+  // a real deploy that this key pair isn't: a production-scoped key's JWT got a 403
+  // BadEnvironmentKeyInToken (auth-tier rejection) from api.sandbox.push.apple.com, while the
+  // exact same JWT sent to api.push.apple.com got the normal token-tier 400 BadDeviceToken. So
+  // each environment gets its own auth provider and client, selected per-token at send time
+  // rather than assuming one key covers both.
+  const apnsClients = {
+    sandbox: new ApnsClient({
+      authProvider: new ApnsAuthProvider({
+        keyPath: config.apnsSandboxKeyPath,
+        keyId: config.apnsSandboxKeyId,
+        teamId: config.apnsTeamId,
+      }),
+      topic: config.apnsTopic,
+    }),
+    production: new ApnsClient({
+      authProvider: new ApnsAuthProvider({
+        keyPath: config.apnsKeyPath,
+        keyId: config.apnsKeyId,
+        teamId: config.apnsTeamId,
+      }),
+      topic: config.apnsTopic,
+    }),
+  };
   const dedupe = new StartEventDedupe();
 
-  // Startup auth check: send to a syntactically-valid-but-nonexistent device token. A working
-  // key/kid/team-id combination gets a 400 BadDeviceToken (auth succeeded, token just isn't
-  // real); a misconfigured one gets 403 InvalidProviderToken. Fail loudly now rather than
-  // silently dropping every future push-to-start request.
+  // Startup auth check, once per environment/key pair: send to a syntactically-valid-but-
+  // nonexistent device token. A working key/kid/team-id combination gets a 400 BadDeviceToken
+  // (auth succeeded, token just isn't real); a misconfigured one gets 403. Fail loudly now
+  // rather than silently dropping every future push-to-start request.
   //
   // This check is best-effort: it must never block startup. A hung TCP/TLS connection to Apple
   // (ApnsClient has no per-request timeout) would otherwise stall server.listen() forever, and a
@@ -36,26 +54,28 @@ async function main() {
   // exit on a definitive, successfully-received 403 — an unambiguous "your credentials are
   // wrong" answer from Apple.
   const AUTH_CHECK_TIMEOUT_MS = 10000;
-  try {
-    const authCheckResult = await Promise.race([
-      apnsClient.send({
-        token: '0'.repeat(64),
-        environment: 'production',
-        payload: buildPushToStartPayload({ printerID: 'startup-check', printerName: 'startup-check' }),
-      }).then((result) => ({ timedOut: false, result })),
-      new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), AUTH_CHECK_TIMEOUT_MS)),
-    ]);
+  for (const environment of ['sandbox', 'production']) {
+    try {
+      const authCheckResult = await Promise.race([
+        apnsClients[environment].send({
+          token: '0'.repeat(64),
+          environment,
+          payload: buildPushToStartPayload({ printerID: 'startup-check', printerName: 'startup-check' }),
+        }).then((result) => ({ timedOut: false, result })),
+        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), AUTH_CHECK_TIMEOUT_MS)),
+      ]);
 
-    if (authCheckResult.timedOut) {
-      console.error(`APNs auth check timed out after ${AUTH_CHECK_TIMEOUT_MS}ms — continuing startup anyway`);
-    } else if (authCheckResult.result.status === 403) {
-      console.error(`APNs auth check failed (403 ${authCheckResult.result.body}) — check APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_PATH`);
-      process.exit(1);
-    } else {
-      console.log(`APNs auth check passed (status ${authCheckResult.result.status}, as expected for a fake device token)`);
+      if (authCheckResult.timedOut) {
+        console.error(`APNs ${environment} auth check timed out after ${AUTH_CHECK_TIMEOUT_MS}ms — continuing startup anyway`);
+      } else if (authCheckResult.result.status === 403) {
+        console.error(`APNs ${environment} auth check failed (403 ${authCheckResult.result.body}) — check the ${environment} APNS_KEY_ID/APNS_KEY_PATH pair`);
+        process.exit(1);
+      } else {
+        console.log(`APNs ${environment} auth check passed (status ${authCheckResult.result.status}, as expected for a fake device token)`);
+      }
+    } catch (error) {
+      console.error(`APNs ${environment} auth check threw (network/DNS issue?) — continuing startup anyway:`, error);
     }
-  } catch (error) {
-    console.error('APNs auth check threw (network/DNS issue?) — continuing startup anyway:', error);
   }
 
   const onNtfyMessage = async (message) => {
@@ -69,7 +89,8 @@ async function main() {
     const payload = buildPushToStartPayload({ printerID, printerName: name });
     for (const entry of tokenStore.list()) {
       try {
-        const result = await apnsClient.send({ token: entry.token, environment: entry.environment, payload });
+        const client = apnsClients[entry.environment] || apnsClients.production;
+        const result = await client.send({ token: entry.token, environment: entry.environment, payload });
         if (result.shouldRemoveToken) {
           await tokenStore.remove(entry.token);
           console.log(`Removed dead token (status ${result.status}): ${entry.token}`);

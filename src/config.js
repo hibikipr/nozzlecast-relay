@@ -5,6 +5,8 @@ const REQUIRED_VARS = [
   'RELAY_AUTH_SECRET',
   'APNS_KEY_PATH',
   'APNS_KEY_ID',
+  'APNS_SANDBOX_KEY_PATH',
+  'APNS_SANDBOX_KEY_ID',
   'APNS_TEAM_ID',
   'APNS_BUNDLE_ID',
 ];
@@ -20,8 +22,17 @@ function loadConfig(env = process.env) {
     ntfyTopic: env.NTFY_TOPIC,
     ntfyAuthToken: env.NTFY_AUTH_TOKEN,
     relayAuthSecret: env.RELAY_AUTH_SECRET,
+    // Apple APNs auth keys are ordinarily environment-agnostic (one key works against both
+    // api.push.apple.com and api.sandbox.push.apple.com) -- but confirmed empirically against a
+    // real deploy that this is not universally true: a key scoped to production got a 403
+    // BadEnvironmentKeyInToken (an auth-tier rejection) when its JWT was presented to the
+    // sandbox host, while the exact same JWT sent to the production host got the normal
+    // token-tier 400 BadDeviceToken. So this supports two distinct (path, keyId) pairs rather
+    // than assuming one key covers both.
     apnsKeyPath: env.APNS_KEY_PATH,
     apnsKeyId: env.APNS_KEY_ID,
+    apnsSandboxKeyPath: env.APNS_SANDBOX_KEY_PATH,
+    apnsSandboxKeyId: env.APNS_SANDBOX_KEY_ID,
     apnsTeamId: env.APNS_TEAM_ID,
     apnsBundleId: env.APNS_BUNDLE_ID,
     apnsTopic: `${env.APNS_BUNDLE_ID}.push-type.liveactivity`,

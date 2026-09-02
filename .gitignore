@@ -3,3 +3,4 @@ data/
 *.p8
 .env
 .worktrees/
+.DS_Store

@@ -11,8 +11,11 @@ services:
       RELAY_AUTH_SECRET: "${RELAY_AUTH_SECRET}"
       APNS_KEY_PATH: "/secrets/AuthKey.p8"
       APNS_KEY_ID: "${APNS_KEY_ID}"
+      APNS_SANDBOX_KEY_PATH: "/secrets/AuthKey-Sandbox.p8"
+      APNS_SANDBOX_KEY_ID: "${APNS_SANDBOX_KEY_ID}"
       APNS_TEAM_ID: "89863526TH"
       APNS_BUNDLE_ID: "com.victormanuel.NozzleCast"
     volumes:
       - ./data:/data
       - ./secrets/AuthKey.p8:/secrets/AuthKey.p8:ro
+      - ./secrets/AuthKey-Sandbox.p8:/secrets/AuthKey-Sandbox.p8:ro
