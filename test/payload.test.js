@@ -24,7 +24,8 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   ].sort());
   assert.equal(state.progress, 0);
   assert.equal(state.stateLabel, 'Printing');
-  assert.equal(state.startedAt, '2026-09-02T13:23:34Z');
+  assert.equal(state.startedAt, Math.floor(now.getTime() / 1000));
+  assert.equal(typeof state.startedAt, 'number');
   assert.equal(state.jobName, null);
   assert.equal(state.estimatedEndAt, null);
   assert.equal(state.currentLayer, null);
@@ -35,15 +36,19 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   assert.equal(state.liveSnapshot, null);
 });
 
-test('buildPushToStartPayload strips fractional seconds from startedAt', () => {
-  // Date.toISOString() includes milliseconds ("...34.789Z"); Swift's JSONDecoder .iso8601
-  // strategy -- which ActivityKit uses to decode a push-to-start payload's content-state --
-  // does not parse that by default. A device silently fails to create the Live Activity if
-  // this isn't stripped, with no error surfaced anywhere (confirmed against a real deploy:
-  // APNs accepted every push cleanly, but nothing ever rendered, until this was fixed).
+test('buildPushToStartPayload sends startedAt as a Unix timestamp number, not a date string', () => {
+  // ActivityKit always decodes a pushed content-state with Foundation's default JSONDecoder
+  // date strategy (.deferredToDate), regardless of any custom strategy the app itself might use
+  // elsewhere -- and that default expects a raw seconds-since-1970 number, not any string form
+  // (ISO8601 or otherwise). Sending a string here is a type mismatch: APNs still accepts and
+  // delivers the push (a clean 2xx), but the device can't construct ContentState from it, so the
+  // Live Activity is simply never created, with no error surfaced anywhere to find. Confirmed
+  // against a real deploy: an earlier ISO8601-string version of this field (even with fractional
+  // seconds correctly stripped) still silently failed for exactly this reason.
   const now = new Date('2026-09-02T13:23:34.789Z');
   const payload = buildPushToStartPayload({ printerID: 'vich2c', printerName: 'Vic H2C', now });
-  assert.equal(payload.aps['content-state'].startedAt, '2026-09-02T13:23:34Z');
+  assert.equal(payload.aps['content-state'].startedAt, Math.floor(now.getTime() / 1000));
+  assert.equal(typeof payload.aps['content-state'].startedAt, 'number');
 });
 
 test('buildPushToStartPayload defaults now to the current time', () => {

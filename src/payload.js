@@ -1,21 +1,19 @@
-// Date.prototype.toISOString() includes fractional seconds ("...13:23:34.123Z"), but Swift's
-// JSONDecoder .iso8601 date strategy -- which ActivityKit uses to decode a push-to-start
-// payload's content-state on-device -- does NOT parse fractional seconds by default. A decode
-// failure there is silent: APNs still accepts and delivers the push (the server sees a normal
-// 2xx), but the Live Activity is simply never created, with no error surfaced anywhere.
-// Confirmed as the real cause of exactly that symptom against a live deploy. Stripping the
-// milliseconds produces the plain-seconds ISO 8601 form ISO8601DateFormatter's default options
-// actually parse.
-function toWholeSecondISOString(date) {
-  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
 function buildContentState(now) {
   return {
     progress: 0,
     stateLabel: 'Printing',
     jobName: null,
-    startedAt: toWholeSecondISOString(now),
+    // ActivityKit always decodes a pushed content-state with Foundation's DEFAULT JSONDecoder
+    // strategy (no custom date strategy is applied, regardless of what the app's own decoders
+    // elsewhere use) -- and Foundation's default Date decoding strategy is `.deferredToDate`,
+    // which expects a raw Unix timestamp number (seconds since 1970), not any string form at
+    // all. An ISO8601 string previously sent here (with or without fractional seconds) is a
+    // type mismatch, not a format mismatch -- Apple's own guidance is explicit that this is a
+    // common cause of push-to-start silently doing nothing: APNs accepts and delivers the push
+    // fine, but the device can't construct ContentState from it, with zero error surfaced
+    // anywhere. Confirmed as the real remaining cause against a live deploy after an earlier,
+    // still-wrong ISO8601-string attempt at this same field.
+    startedAt: Math.floor(now.getTime() / 1000),
     estimatedEndAt: null,
     currentLayer: null,
     totalLayers: null,
