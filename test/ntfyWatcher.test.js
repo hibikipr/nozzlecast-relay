@@ -45,9 +45,13 @@ function fakeStreamResponse(chunks) {
   return {
     ok: true,
     body: {
+      // Real fetch() Response bodies yield plain Uint8Array chunks, not Node Buffers — Buffer
+      // overrides toString() to UTF-8 decode; a bare Uint8Array does not. A Buffer-based fake
+      // here previously masked a real production bug (see src/ntfyWatcher.js's `_connectOnce`
+      // comment), so this uses TextEncoder to produce the same Uint8Array shape real fetch does.
       async *[Symbol.asyncIterator]() {
         for (const chunk of chunks) {
-          yield Buffer.from(chunk);
+          yield new TextEncoder().encode(chunk);
         }
       },
     },

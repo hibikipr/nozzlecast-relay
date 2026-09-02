@@ -51,12 +51,7 @@ class NtfyWatcher {
     let hasConnectedBefore = false;
     while (!this.stopped) {
       try {
-        await this._connectOnce();
-        if (hasConnectedBefore) {
-          console.log(`ntfy watcher reconnected to ${this.server}/${this.topic}`);
-        } else {
-          console.log(`ntfy watcher connected to ${this.server}/${this.topic}`);
-        }
+        await this._connectOnce(hasConnectedBefore);
         hasConnectedBefore = true;
         this.currentBackoffMs = this.minBackoffMs; // reset on a clean connect+stream
       } catch (error) {
@@ -73,7 +68,7 @@ class NtfyWatcher {
     }
   }
 
-  async _connectOnce() {
+  async _connectOnce(isReconnect) {
     const url = `${this.server}/${this.topic}/sse`;
     this.abortController = new AbortController();
     const response = await this.fetchImpl(url, {
@@ -85,10 +80,23 @@ class NtfyWatcher {
       throw new Error(`ntfy connection failed with status ${response.status}`);
     }
 
+    console.log(
+      isReconnect
+        ? `ntfy watcher reconnected to ${this.server}/${this.topic}`
+        : `ntfy watcher connected to ${this.server}/${this.topic}`,
+    );
+
+    // `chunk` here is a raw Uint8Array from the fetch Response body stream, NOT a Node Buffer —
+    // Buffer overrides toString() to UTF-8 decode, but plain Uint8Array doesn't, so
+    // `chunk.toString()` silently produced a comma-joined list of byte values instead of text,
+    // meaning parseSseChunk never matched a real `data:` line and onMessage was never called for
+    // ANY message. A TextDecoder with `{ stream: true }` both decodes correctly and correctly
+    // reassembles a multibyte UTF-8 character that lands split across two chunks.
+    const decoder = new TextDecoder('utf-8');
     let remainder = '';
     for await (const chunk of response.body) {
       if (this.stopped) return;
-      const { messages, remainder: nextRemainder } = parseSseChunk(remainder + chunk.toString());
+      const { messages, remainder: nextRemainder } = parseSseChunk(remainder + decoder.decode(chunk, { stream: true }));
       remainder = nextRemainder;
       for (const message of messages) {
         if (message.event === 'message') {
