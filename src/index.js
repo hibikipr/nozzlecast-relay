@@ -106,7 +106,7 @@ async function main() {
         && !isRemainingTimeTrustworthy(status.remaining_time, enrichment.progress)
       ) {
         console.log(
-          `Bambuddy enrichment: rejected implausible remaining_time=${status.remaining_time}s at progress=${enrichment.progress} for printer "${name}" -- omitting estimatedEndAt this update`,
+          `Bambuddy enrichment: rejected implausible remaining_time=${status.remaining_time}min at progress=${enrichment.progress} for printer "${name}" -- omitting estimatedEndAt this update`,
         );
       }
     } catch (error) {

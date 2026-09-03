@@ -115,16 +115,42 @@ redundant fetch of the exact same data a moment later.
   (Apple never validates a payload against the app's actual Swift types) — see the enrichment
   design doc's own changelog for the fix (`Math.round()` in `enrichmentFromStatus`).
 - **`remaining_time` (and therefore `estimatedEndAt`) couldn't be trusted as-is** — confirmed
-  live: `remaining_time: 3` both right at print start and again at 62% progress on the same
-  job, clearly a placeholder/stale figure rather than a real estimate. Once the `Int?` bug above
-  was fixed and push-to-start actually rendered, this surfaced exactly as suspected: progress
-  showing 100% almost immediately with a still-ticking timer, since `PrintActivityWidget`'s
-  `LiveProgressText` interpolates `elapsed / (estimatedEndAt - startedAt)` locally every second,
-  and that fraction clamps to 1.0 almost instantly when the denominator is ~3 seconds. **Fixed**
-  in `enrichmentFromStatus`/`isRemainingTimeTrustworthy`: `remaining_time` under 30 seconds is
-  only trusted when progress is also ≥ 95% (a near-zero remaining time is only plausible near
-  completion) — otherwise `estimatedEndAt` comes back `null` and the widget falls back to its
-  non-interpolated `progress`-only display.
+  live: `remaining_time: 3` (minutes — see the units bug below) both right at print start and
+  again at 62% progress on the same job, clearly a placeholder/stale figure rather than a real
+  estimate. Once the `Int?` bug above was fixed and push-to-start actually rendered, this
+  surfaced exactly as suspected: progress showing 100% almost immediately with a still-ticking
+  timer, since `PrintActivityWidget`'s `LiveProgressText` interpolates
+  `elapsed / (estimatedEndAt - startedAt)` locally every second, and that fraction clamps to 1.0
+  almost instantly when the denominator is tiny. **Fixed** in
+  `enrichmentFromStatus`/`isRemainingTimeTrustworthy`: `remaining_time` under
+  `MIN_TRUSTED_REMAINING_TIME_MINUTES` is only trusted when progress is also ≥ 95% (a near-zero
+  remaining time is only plausible near completion) — otherwise `estimatedEndAt` comes back
+  `null` and the widget falls back to its non-interpolated `progress`-only display.
+- **`remaining_time` units bug — read as seconds, actually minutes (2026-09-03, found later the
+  same night)**: `enrichmentFromStatus` computed `estimatedEndAt = now + remaining_time` treating
+  the value as seconds. Bambuddy's `GET /status` passes `remaining_time` straight through from
+  the printer's raw MQTT `mc_remaining_time` field unconverted, and that field is minutes, not
+  seconds — confirmed against Bambuddy's own backend source
+  (`bambu_mqtt.py: self.state.remaining_time = int(data["mc_remaining_time"])`) and against
+  NozzleCast's own app code, which already treats the same value correctly (`etaMinutesRemaining`,
+  multiplied by 60 before use). Caught live on an H2C print: the relay's pushed `estimatedEndAt`
+  read ~5:33 while Bambuddy's own dashboard showed ~6:45 for the same in-progress print — the
+  live raw `remaining_time` was 68, and `now + 68 min` matches the dashboard exactly while
+  `now + 68 sec` matches the wrong relay-pushed time. Every poll-trigger `estimatedEndAt` had
+  been wrong by roughly a 60x factor since this feature shipped, except when `remaining_time`
+  happened to be treated as an untrusted near-zero value (see above) and came back `null`
+  instead. **Fixed**: `enrichmentFromStatus` now multiplies by `60 * 1000`, and
+  `MIN_TRUSTED_REMAINING_TIME_MINUTES` (0.5, i.e. the same 30-second-equivalent floor, now
+  correctly expressed in the field's real unit) replaces the old
+  `MIN_TRUSTED_REMAINING_TIME_SECONDS = 30`. One follow-on consequence worth flagging: the
+  "`remaining_time` stuck at 3 for an entire print" case documented below happened to read as
+  "3 seconds" under the old (wrong) unit assumption, which cleared *under* the old 30-second
+  floor and was therefore always rejected regardless of progress. Under the corrected minutes
+  interpretation that same raw value (3 minutes) clears the new 0.5-minute floor immediately, so
+  a print hitting that exact pathological case again would now show a perpetually-3-minutes-away
+  `estimatedEndAt` instead of `null` — not re-tested against that specific test file since the
+  fix, since drop-in fixed the units bug and no evidence yet that a stuck-minutes case will
+  recur.
 - **Manual stop labeled "Failed" instead of "Cancelled"** (matching Bambu Handy's own wording)
   — dug past the initial "probably opaque" read: Bambuddy's `PrintLogEntry.status` schema *does*
   support a `"cancelled"` value, but per `PrintLogEntryUpdate`'s own description that value is
@@ -259,16 +285,19 @@ between real transitions.
 
 Confirmed not a relay bug: for at least one specific test G-code file Victor kept reprinting
 ("No AMS Version..." / "Grumpy Unicorn — Plate 6"), Bambuddy's `remaining_time` never moved off
-~3 seconds for the print's entire duration, regardless of real progress climbing from 0% to 63%+
-— reproduced identically across two separate full test runs. The `estimatedEndAt` sanity check
-(reject an implausibly small `remaining_time`) is behaving exactly as designed here: "3 seconds
-left" is exactly as implausible at 63% progress as it is at 0%, and no threshold adjustment would
-call it trustworthy. `estimatedEndAt` is correctly `null` for every push of that specific print —
-either the slicer's embedded time estimate is broken for that file, or Bambuddy's remaining-time
-calculation doesn't work for it; not something fixable from the relay side. Confirmed later the
-same night against a different, real print job all the way to completion: `estimatedEndAt`
-populated correctly and the widget's "Est. finish" display worked as intended — this really was a
-test-file-specific data gap, not a systemic bug.
+~3 (minutes — see the units bug above; read as "~3 seconds" at the time this was investigated,
+before the units bug was found) for the print's entire duration, regardless of real progress
+climbing from 0% to 63%+ — reproduced identically across two separate full test runs. At the time,
+the `estimatedEndAt` sanity check (reject an implausibly small `remaining_time`) was behaving
+exactly as designed under the (wrong) seconds assumption: "3 seconds left" is exactly as
+implausible at 63% progress as it is at 0%, so `estimatedEndAt` came back `null` for every push of
+that specific print. Either the slicer's embedded time estimate is broken for that file, or
+Bambuddy's remaining-time calculation doesn't work for it; not something fixable from the relay
+side. Confirmed later the same night against a different, real print job all the way to
+completion: `estimatedEndAt` populated correctly and the widget's "Est. finish" display worked as
+intended — this really was a test-file-specific data gap, not a systemic bug, though see the units
+bug entry above for how the *threshold* that happened to catch this specific case has since
+changed (3 minutes now clears the corrected 0.5-minute floor and would no longer be rejected).
 
 ## Not yet done / open items
 

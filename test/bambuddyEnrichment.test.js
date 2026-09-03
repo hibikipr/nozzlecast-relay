@@ -9,7 +9,7 @@ test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real s
     subtask_name: 'benchy.gcode',
     layer_num: 100,
     total_layers: 250,
-    remaining_time: 600,
+    remaining_time: 10, // minutes
     temperatures: { nozzle: 220.5, bed: 60 },
   };
 
@@ -21,7 +21,7 @@ test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real s
   assert.equal(enrichment.totalLayers, 250);
   assert.equal(enrichment.nozzleTempC, 221); // rounded from 220.5 -- see the Int? rounding test below
   assert.equal(enrichment.bedTempC, 60);
-  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 600 * 1000);
+  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 10 * 60 * 1000);
 });
 
 test('enrichmentFromStatus does NOT read camelCase keys -- Bambuddy never sends them', () => {
@@ -94,45 +94,53 @@ test('enrichmentFromStatus handles a missing temperatures object without throwin
 
 test('enrichmentFromStatus defaults now to the current time', () => {
   const before = Date.now();
-  const enrichment = enrichmentFromStatus({ remaining_time: 60 });
+  const enrichment = enrichmentFromStatus({ remaining_time: 1 }); // 1 minute
   const after = Date.now();
 
   assert.ok(enrichment.estimatedEndAt.getTime() >= before + 60 * 1000);
   assert.ok(enrichment.estimatedEndAt.getTime() <= after + 60 * 1000);
 });
 
-test('isRemainingTimeTrustworthy trusts any value at or above the 30s floor, regardless of progress', () => {
-  assert.equal(isRemainingTimeTrustworthy(30, 0), true);
-  assert.equal(isRemainingTimeTrustworthy(600, 0.1), true);
+// Bambuddy's remaining_time is minutes (straight from the printer's raw mc_remaining_time MQTT
+// field), not seconds -- confirmed against Bambuddy's own source and against NozzleCast's app
+// code (which already multiplies it by 60). An earlier version of this file/bambuddyEnrichment.js
+// treated it as seconds, silently computing an estimatedEndAt roughly 60x too soon for the
+// entire lifetime of the poll-trigger feature -- caught only by comparing a live relay-pushed
+// ETA against Bambuddy's own dashboard ETA for the same in-progress print.
+test('isRemainingTimeTrustworthy trusts any value at or above the 0.5 minute floor, regardless of progress', () => {
+  assert.equal(isRemainingTimeTrustworthy(0.5, 0), true);
+  assert.equal(isRemainingTimeTrustworthy(10, 0.1), true);
 });
 
 test('isRemainingTimeTrustworthy only trusts a near-zero value when progress is also near completion', () => {
-  assert.equal(isRemainingTimeTrustworthy(3, 0), false);
-  assert.equal(isRemainingTimeTrustworthy(3, 0.62), false); // the exact real case observed live
-  assert.equal(isRemainingTimeTrustworthy(3, 0.95), true);
-  assert.equal(isRemainingTimeTrustworthy(3, 1), true);
+  assert.equal(isRemainingTimeTrustworthy(0, 0), false);
+  assert.equal(isRemainingTimeTrustworthy(0, 0.62), false);
+  assert.equal(isRemainingTimeTrustworthy(0, 0.95), true);
+  assert.equal(isRemainingTimeTrustworthy(0, 1), true);
 });
 
 test('isRemainingTimeTrustworthy treats a missing/non-numeric progress as not near completion', () => {
-  assert.equal(isRemainingTimeTrustworthy(3, null), false);
-  assert.equal(isRemainingTimeTrustworthy(3, undefined), false);
+  assert.equal(isRemainingTimeTrustworthy(0, null), false);
+  assert.equal(isRemainingTimeTrustworthy(0, undefined), false);
 });
 
 test('enrichmentFromStatus omits estimatedEndAt when remaining_time is implausible for the current progress', () => {
-  // The exact real case observed live: remaining_time: 3 both right at print start (progress 0)
-  // and again at 62% progress on the same job -- a placeholder/stale figure, not a real estimate.
-  assert.equal(enrichmentFromStatus({ progress: 0, remaining_time: 3 }).estimatedEndAt, null);
-  assert.equal(enrichmentFromStatus({ progress: 62, remaining_time: 3 }).estimatedEndAt, null);
+  // The exact real case observed live: remaining_time: 3 (minutes) both right at print start
+  // (progress 0) and again at 62% progress on the same job -- a placeholder/stale figure, not a
+  // real estimate. 3 minutes clears the 0.5-minute floor, so this fixture uses 0 instead to
+  // exercise the actual untrusted case.
+  assert.equal(enrichmentFromStatus({ progress: 0, remaining_time: 0 }).estimatedEndAt, null);
+  assert.equal(enrichmentFromStatus({ progress: 62, remaining_time: 0 }).estimatedEndAt, null);
 });
 
 test('enrichmentFromStatus keeps a near-zero remaining_time when progress is genuinely near completion', () => {
   const now = new Date('2026-09-03T12:00:00.000Z');
-  const enrichment = enrichmentFromStatus({ progress: 99, remaining_time: 3 }, { now });
-  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 3000);
+  const enrichment = enrichmentFromStatus({ progress: 99, remaining_time: 0 }, { now });
+  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime());
 });
 
 test('enrichmentFromStatus still trusts a plausible remaining_time at low progress', () => {
   const now = new Date('2026-09-03T12:00:00.000Z');
-  const enrichment = enrichmentFromStatus({ progress: 5, remaining_time: 900 }, { now });
-  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 900 * 1000);
+  const enrichment = enrichmentFromStatus({ progress: 5, remaining_time: 68 }, { now });
+  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 68 * 60 * 1000);
 });

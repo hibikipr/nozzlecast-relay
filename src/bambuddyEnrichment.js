@@ -8,21 +8,33 @@
 // ntfy event fires, Bambuddy's live status may already read "idle" or similar, which would race
 // with detecting the *event* itself. Bambuddy's API is the source for telemetry; ntfy stays the
 // source for event timing.
-// Bambuddy's remaining_time has been observed live to report an implausible near-zero value
-// (3 seconds) both right at print start AND again at 62% progress on the same printer/job --
-// clearly a placeholder/stale figure in at least those situations, not a real estimate. A
-// genuinely near-zero remaining time is only plausible when the print is nearly done, so it's
-// only trusted past MIN_TRUSTED_REMAINING_TIME_SECONDS unless progress also clears
-// NEAR_COMPLETION_PROGRESS. Untrusted means estimatedEndAt comes back null rather than a
-// degenerate value -- this feeds a native SwiftUI countdown timer on the app side
-// (Text(timerInterval:)-style), where a real-but-tiny range doesn't crash anything but produces
-// a broken-looking "stuck at 100%, timer still ticking" display, confirmed against a real
-// push-to-start once the separate Int-decode bug that was blocking rendering entirely got fixed.
-const MIN_TRUSTED_REMAINING_TIME_SECONDS = 30;
+// Bambuddy's status.remaining_time is passed straight through from the printer's raw MQTT
+// mc_remaining_time field, which Bambu firmware reports in MINUTES, not seconds -- confirmed
+// against Bambuddy's own source (backend/app/services/bambu_mqtt.py:
+// `self.state.remaining_time = int(data["mc_remaining_time"])`, routes/printers.py passing it
+// through unconverted) and against NozzleCast's own app code, which already treats the same
+// field correctly (named etaMinutesRemaining, multiplied by 60 before use). An earlier version
+// of this file treated it as seconds, which happened to look self-consistent (a monotonically
+// decreasing number, refetched live every tick, never cached) while being wrong by a ~60x
+// factor the entire time -- only caught by comparing against Bambuddy's own dashboard ETA for a
+// real live print (relay said ~5:33, dashboard said ~6:45; 68 *minutes* remaining matches 6:45,
+// 68 *seconds* matches 5:33).
+//
+// A previously-observed implausible near-zero reading (a live case: remaining_time=3, i.e. 3
+// minutes, both right at print start AND again at 62% progress on the same printer/job) is still
+// clearly a placeholder/stale figure in those situations, not a real estimate -- a genuinely
+// near-zero remaining time is only plausible when the print is nearly done, so it's only trusted
+// past MIN_TRUSTED_REMAINING_TIME_MINUTES unless progress also clears NEAR_COMPLETION_PROGRESS.
+// Untrusted means estimatedEndAt comes back null rather than a degenerate value -- this feeds a
+// native SwiftUI countdown timer on the app side (Text(timerInterval:)-style), where a
+// real-but-tiny range doesn't crash anything but produces a broken-looking "stuck at 100%, timer
+// still ticking" display, confirmed against a real push-to-start once the separate Int-decode bug
+// that was blocking rendering entirely got fixed.
+const MIN_TRUSTED_REMAINING_TIME_MINUTES = 0.5;
 const NEAR_COMPLETION_PROGRESS = 0.95;
 
-function isRemainingTimeTrustworthy(remainingTimeSeconds, progressFraction) {
-  if (remainingTimeSeconds >= MIN_TRUSTED_REMAINING_TIME_SECONDS) return true;
+function isRemainingTimeTrustworthy(remainingTimeMinutes, progressFraction) {
+  if (remainingTimeMinutes >= MIN_TRUSTED_REMAINING_TIME_MINUTES) return true;
   return typeof progressFraction === 'number' && progressFraction >= NEAR_COMPLETION_PROGRESS;
 }
 
@@ -36,9 +48,9 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
   // always undefined against the real API, exactly as null as if Bambuddy had never returned
   // them at all.
   const progressFraction = typeof status.progress === 'number' ? status.progress / 100 : null;
-  const rawRemainingTimeSeconds = typeof status.remaining_time === 'number' ? status.remaining_time : null;
-  const remainingTimeSeconds = rawRemainingTimeSeconds !== null && isRemainingTimeTrustworthy(rawRemainingTimeSeconds, progressFraction)
-    ? rawRemainingTimeSeconds
+  const rawRemainingTimeMinutes = typeof status.remaining_time === 'number' ? status.remaining_time : null;
+  const remainingTimeMinutes = rawRemainingTimeMinutes !== null && isRemainingTimeTrustworthy(rawRemainingTimeMinutes, progressFraction)
+    ? rawRemainingTimeMinutes
     : null;
   // PrintActivityAttributes.ContentState declares nozzleTempC/bedTempC as Swift Int?, matching
   // the app's existing Int-everywhere convention for displayed temps -- confirmed as a real bug
@@ -56,7 +68,7 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
     totalLayers: typeof status.total_layers === 'number' ? status.total_layers : null,
     nozzleTempC: roundedOrNull(status.temperatures?.nozzle),
     bedTempC: roundedOrNull(status.temperatures?.bed),
-    estimatedEndAt: remainingTimeSeconds !== null ? new Date(now.getTime() + remainingTimeSeconds * 1000) : null,
+    estimatedEndAt: remainingTimeMinutes !== null ? new Date(now.getTime() + remainingTimeMinutes * 60 * 1000) : null,
   };
 }
 
