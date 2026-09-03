@@ -231,6 +231,42 @@ async function main() {
     }
   };
 
+  // Sends the background content-available wake push to every registered device token -- see
+  // buildBackgroundWakePayload. Called once at push-to-start, and then retried from
+  // sendActivityUpdate's no-token branch below on every subsequent attempt (including the
+  // correction-interval tick) for as long as a printer has no activity token registered yet.
+  // iOS's delivery of a "background" push is discretionary and can be delayed with no
+  // relay-visible signal -- confirmed live: an H2C print's token didn't land for ~37.5 minutes
+  // because the one-shot wake at print-start was evidently delayed by iOS, leaving the activity
+  // stale with no way to retry until something unrelated (e.g. foregrounding the app) happened
+  // to trigger PrintLiveActivityManager.sync on its own. Naturally self-limiting: it only fires
+  // while sendActivityUpdate finds no token, and stops the moment /register-activity lands.
+  const sendBackgroundWake = async (name) => {
+    const wakePayload = buildBackgroundWakePayload();
+    for (const entry of deviceTokenStore.list()) {
+      try {
+        const client = apnsClients[entry.environment] || apnsClients.production;
+        const result = await client.send({
+          token: entry.token,
+          environment: entry.environment,
+          payload: wakePayload,
+          pushType: 'background',
+          topic: config.apnsBundleId,
+        });
+        if (result.shouldRemoveToken) {
+          await deviceTokenStore.remove(entry.token);
+          console.log(`Removed dead device token (status ${result.status}): ${entry.token}`);
+        } else if (!result.ok) {
+          console.error(`Background wake send failed (status ${result.status}) for device token ${entry.token}: ${result.body}`);
+        } else {
+          console.log(`Background wake sent for printer "${name}" to device token ${entry.token}`);
+        }
+      } catch (error) {
+        console.error(`Background wake send threw for device token ${entry.token}:`, error);
+      }
+    }
+  };
+
   const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null }) => {
     const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus });
     const payload = buildPushToStartPayload({
@@ -266,29 +302,7 @@ async function main() {
     // Also wake the app itself in the background: a push-to-start-created activity is invisible
     // to `Activity<PrintActivityAttributes>.activities` everywhere (app, NSE, widget) until the
     // app runs its own `PrintLiveActivityManager.sync` at least once — see buildBackgroundWakePayload.
-    const wakePayload = buildBackgroundWakePayload();
-    for (const entry of deviceTokenStore.list()) {
-      try {
-        const client = apnsClients[entry.environment] || apnsClients.production;
-        const result = await client.send({
-          token: entry.token,
-          environment: entry.environment,
-          payload: wakePayload,
-          pushType: 'background',
-          topic: config.apnsBundleId,
-        });
-        if (result.shouldRemoveToken) {
-          await deviceTokenStore.remove(entry.token);
-          console.log(`Removed dead device token (status ${result.status}): ${entry.token}`);
-        } else if (!result.ok) {
-          console.error(`Background wake send failed (status ${result.status}) for device token ${entry.token}: ${result.body}`);
-        } else {
-          console.log(`Background wake sent for printer "${name}" to device token ${entry.token}`);
-        }
-      } catch (error) {
-        console.error(`Background wake send threw for device token ${entry.token}:`, error);
-      }
-    }
+    await sendBackgroundWake(name);
   };
 
   // Updates or ends an existing Live Activity directly via its own per-activity push token,
@@ -309,7 +323,8 @@ async function main() {
   }) => {
     const activity = activityTokenStore.get(printerID);
     if (!activity || !activity.token) {
-      console.log(`No activity token registered for printer "${name}", skipping ${event} push`);
+      console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake`);
+      await sendBackgroundWake(name);
       return;
     }
 

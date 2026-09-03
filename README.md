@@ -78,7 +78,17 @@ docker compose up -d --build
   every print-start event the relay also sends a `content-available` background push to each
   registered device token, waking the app so its own `PrintLiveActivityManager.sync` runs — a
   secondary fallback that keeps a locally-created/backgrounded activity in sync, not the primary
-  mechanism (that's `/register-activity` below). See NozzleCast's `ARCHITECTURE.md`.
+  mechanism (that's `/register-activity` below). See NozzleCast's `ARCHITECTURE.md`. iOS's
+  delivery of a background push is discretionary and can be delayed with no relay-visible signal
+  — confirmed live when an H2C print's activity token took ~37.5 minutes to register because the
+  one-shot wake at print-start was evidently delayed. So this wake is retried on every
+  `update`/`end` attempt for as long as a printer's activity has no token registered yet
+  (piggybacking on the poll trigger's correction-interval tick — see
+  `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` above — while polling is enabled), not just sent once;
+  it stops the moment `/register-activity` lands. Note this means a long print with a genuinely
+  offline/unreachable device will get a wake retry on every correction tick for the print's
+  entire duration — worth widening `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` if that turns out to
+  be too chatty against APNs in practice.
 - `POST /register-activity` — body `{ "token": string, "printerID": string, "environment": "sandbox" | "production" }`,
   same auth. Registers the *activity's own* per-activity push token (from
   `Activity<PrintActivityAttributes>.activityUpdates` → `activity.pushTokenUpdates` on the app
