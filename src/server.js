@@ -74,7 +74,9 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     // Defensive: normalize whatever printerID the app sends through the same function the relay
     // uses internally, so a lookup at update/end time is guaranteed to match even if the app
     // ever forwards something other than the exact attributes.printerID it was given at start.
-    await activityTokenStore.registerToken({ printerID: normalizedID(printerID), token, environment });
+    const normalizedPrinterID = normalizedID(printerID);
+    await activityTokenStore.registerToken({ printerID: normalizedPrinterID, token, environment });
+    console.log(`Registered activity token for printer "${normalizedPrinterID}" (${environment})`);
     res.status(200).json({ ok: true });
   });
 
