@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPushToStartPayload } = require('../src/payload');
+const { buildPushToStartPayload, buildBackgroundWakePayload } = require('../src/payload');
 
 test('buildPushToStartPayload produces the documented aps shape', () => {
   const now = new Date('2026-09-02T13:23:34.000Z');
@@ -57,4 +57,9 @@ test('buildPushToStartPayload defaults now to the current time', () => {
   const after = Date.now();
   assert.ok(payload.aps.timestamp >= Math.floor(before / 1000));
   assert.ok(payload.aps.timestamp <= Math.floor(after / 1000));
+});
+
+test('buildBackgroundWakePayload produces a plain content-available push, no alert', () => {
+  const payload = buildBackgroundWakePayload();
+  assert.deepEqual(payload, { aps: { 'content-available': 1 } });
 });

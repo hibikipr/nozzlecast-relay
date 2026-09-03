@@ -14,6 +14,15 @@ async function freshStore() {
   return store;
 }
 
+async function freshStorePair() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozzlecast-relay-test-'));
+  const tokenStore = new TokenStore(path.join(dir, 'tokens.json'));
+  await tokenStore.load();
+  const deviceTokenStore = new TokenStore(path.join(dir, 'device-tokens.json'));
+  await deviceTokenStore.load();
+  return { tokenStore, deviceTokenStore };
+}
+
 test('GET /healthz returns 200 without auth', async () => {
   const store = await freshStore();
   const app = createServer({ tokenStore: store, authSecret: 'secret123' });
@@ -81,4 +90,42 @@ test('DELETE /register without auth is rejected', async () => {
   const res = await request(app).delete('/register').send({ token: 'abc' });
   assert.equal(res.status, 401);
   assert.equal(store.list().length, 1);
+});
+
+test('POST /register-device with the correct bearer token registers it, separately from /register', async () => {
+  const { tokenStore, deviceTokenStore } = await freshStorePair();
+  const app = createServer({ tokenStore, deviceTokenStore, authSecret: 'secret123' });
+
+  const res = await request(app)
+    .post('/register-device')
+    .set('Authorization', 'Bearer secret123')
+    .send({ token: 'devabc', environment: 'sandbox' });
+
+  assert.equal(res.status, 200);
+  assert.equal(deviceTokenStore.list().length, 1);
+  assert.equal(deviceTokenStore.list()[0].token, 'devabc');
+  assert.equal(tokenStore.list().length, 0);
+});
+
+test('POST /register-device without a valid bearer token is rejected', async () => {
+  const { tokenStore, deviceTokenStore } = await freshStorePair();
+  const app = createServer({ tokenStore, deviceTokenStore, authSecret: 'secret123' });
+
+  const res = await request(app).post('/register-device').send({ token: 'devabc', environment: 'sandbox' });
+  assert.equal(res.status, 401);
+  assert.equal(deviceTokenStore.list().length, 0);
+});
+
+test('DELETE /register-device with the correct bearer token removes it', async () => {
+  const { tokenStore, deviceTokenStore } = await freshStorePair();
+  await deviceTokenStore.upsert({ token: 'devabc', environment: 'sandbox' });
+  const app = createServer({ tokenStore, deviceTokenStore, authSecret: 'secret123' });
+
+  const res = await request(app)
+    .delete('/register-device')
+    .set('Authorization', 'Bearer secret123')
+    .send({ token: 'devabc' });
+
+  assert.equal(res.status, 200);
+  assert.equal(deviceTokenStore.list().length, 0);
 });

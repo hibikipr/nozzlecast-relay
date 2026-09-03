@@ -9,7 +9,7 @@ class ApnsClient {
     this.connect = connect;
   }
 
-  async send({ token, environment, payload }) {
+  async send({ token, environment, payload, pushType = 'liveactivity', topic = this.topic }) {
     const origin = environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com';
@@ -17,7 +17,7 @@ class ApnsClient {
     const session = this.connect(origin);
     let sessionErrored = false;
     try {
-      return await this._sendOnSession(session, { token, payload });
+      return await this._sendOnSession(session, { token, payload, pushType, topic });
     } catch (error) {
       sessionErrored = true;
       throw error;
@@ -30,7 +30,7 @@ class ApnsClient {
     }
   }
 
-  _sendOnSession(session, { token, payload }) {
+  _sendOnSession(session, { token, payload, pushType, topic }) {
     return new Promise((resolve, reject) => {
       let settled = false;
       const settleReject = (error) => {
@@ -50,8 +50,8 @@ class ApnsClient {
       const stream = session.request({
         ':method': 'POST',
         ':path': `/3/device/${token}`,
-        'apns-push-type': 'liveactivity',
-        'apns-topic': this.topic,
+        'apns-push-type': pushType,
+        'apns-topic': topic,
         'apns-priority': '10',
         authorization: `bearer ${this.authProvider.getToken()}`,
         'content-type': 'application/json',

@@ -56,6 +56,13 @@ docker compose up -d --build
 ## API
 
 - `POST /register` — body `{ "token": string, "environment": "sandbox" | "production" }`,
-  `Authorization: Bearer <RELAY_AUTH_SECRET>`.
+  `Authorization: Bearer <RELAY_AUTH_SECRET>`. Registers an ActivityKit push-to-start token.
 - `DELETE /register` — body `{ "token": string }`, same auth.
+- `POST /register-device` / `DELETE /register-device` — same shape and auth as `/register`, but
+  for NozzleCast's plain APNs device token rather than a Live Activity push-to-start token. On
+  every print-start event the relay also sends a `content-available` background push to each
+  registered device token, waking the app so its own `PrintLiveActivityManager.sync` runs — the
+  only thing that makes a push-to-start-created activity visible/updatable anywhere (app, NSE, or
+  widget extension all query `Activity<PrintActivityAttributes>.activities`, which otherwise stays
+  empty for an activity the app itself never ran code for). See NozzleCast's `ARCHITECTURE.md`.
 - `GET /healthz` — unauthenticated.

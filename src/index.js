@@ -3,7 +3,7 @@ const path = require('node:path');
 const { loadConfig } = require('./config');
 const { isStartEvent, printerName, normalizedID } = require('./parsing');
 const { StartEventDedupe } = require('./dedupe');
-const { buildPushToStartPayload } = require('./payload');
+const { buildPushToStartPayload, buildBackgroundWakePayload } = require('./payload');
 const { TokenStore } = require('./tokenStore');
 const { ApnsAuthProvider } = require('./apnsAuth');
 const { ApnsClient } = require('./apnsClient');
@@ -15,6 +15,9 @@ async function main() {
 
   const tokenStore = new TokenStore(path.join(config.dataDir, 'tokens.json'));
   await tokenStore.load();
+
+  const deviceTokenStore = new TokenStore(path.join(config.dataDir, 'device-tokens.json'));
+  await deviceTokenStore.load();
 
   // Apple APNs auth keys are ordinarily environment-agnostic, but confirmed empirically against
   // a real deploy that this key pair isn't: a production-scoped key's JWT got a 403
@@ -103,6 +106,33 @@ async function main() {
         console.error(`Push-to-start send threw for token ${entry.token}:`, error);
       }
     }
+
+    // Also wake the app itself in the background: a push-to-start-created activity is invisible
+    // to `Activity<PrintActivityAttributes>.activities` everywhere (app, NSE, widget) until the
+    // app runs its own `PrintLiveActivityManager.sync` at least once — see buildBackgroundWakePayload.
+    const wakePayload = buildBackgroundWakePayload();
+    for (const entry of deviceTokenStore.list()) {
+      try {
+        const client = apnsClients[entry.environment] || apnsClients.production;
+        const result = await client.send({
+          token: entry.token,
+          environment: entry.environment,
+          payload: wakePayload,
+          pushType: 'background',
+          topic: config.apnsBundleId,
+        });
+        if (result.shouldRemoveToken) {
+          await deviceTokenStore.remove(entry.token);
+          console.log(`Removed dead device token (status ${result.status}): ${entry.token}`);
+        } else if (!result.ok) {
+          console.error(`Background wake send failed (status ${result.status}) for device token ${entry.token}: ${result.body}`);
+        } else {
+          console.log(`Background wake sent for printer "${name}" to device token ${entry.token}`);
+        }
+      } catch (error) {
+        console.error(`Background wake send threw for device token ${entry.token}:`, error);
+      }
+    }
   };
 
   const watcher = new NtfyWatcher({
@@ -113,7 +143,7 @@ async function main() {
   });
   watcher.start();
 
-  const app = createServer({ tokenStore, authSecret: config.relayAuthSecret });
+  const app = createServer({ tokenStore, deviceTokenStore, authSecret: config.relayAuthSecret });
   const port = process.env.PORT || 3000;
   const server = http.createServer(app);
   server.listen(port, () => {

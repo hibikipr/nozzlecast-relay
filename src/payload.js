@@ -37,4 +37,19 @@ function buildPushToStartPayload({ printerID, printerName, now = new Date() }) {
   };
 }
 
-module.exports = { buildPushToStartPayload };
+// A plain content-available push to the app's own APNs device token (not a Live Activity
+// token). Wakes NozzleCast briefly in the background so its own `PrintLiveActivityManager.sync`
+// runs — the only code path that ever populates `Activity<PrintActivityAttributes>.activities`
+// for *any* process, including the Notification Service Extension. A push-to-start-created
+// activity is otherwise invisible everywhere (app, NSE, widget) until something runs that sync,
+// confirmed against a real device: the activity appeared and sat frozen until the app was
+// manually foregrounded once, at which point updates started flowing.
+function buildBackgroundWakePayload() {
+  return {
+    aps: {
+      'content-available': 1,
+    },
+  };
+}
+
+module.exports = { buildPushToStartPayload, buildBackgroundWakePayload };

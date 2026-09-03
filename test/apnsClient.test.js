@@ -66,6 +66,32 @@ test('send() sets the required headers', async () => {
   assert.equal(headers['content-type'], 'application/json');
 });
 
+test('send() uses the liveactivity push-type and configured topic by default', async () => {
+  const { connect, calls } = fakeConnectReturning({ status: 200 });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+
+  await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+
+  assert.equal(calls[0].headers['apns-push-type'], 'liveactivity');
+  assert.equal(calls[0].headers['apns-topic'], 'com.victormanuel.NozzleCast.push-type.liveactivity');
+});
+
+test('send() honors an explicit pushType/topic override for a plain background push', async () => {
+  const { connect, calls } = fakeConnectReturning({ status: 200 });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+
+  await client.send({
+    token: 'devtoken123',
+    environment: 'production',
+    payload: { aps: { 'content-available': 1 } },
+    pushType: 'background',
+    topic: 'com.victormanuel.NozzleCast',
+  });
+
+  assert.equal(calls[0].headers['apns-push-type'], 'background');
+  assert.equal(calls[0].headers['apns-topic'], 'com.victormanuel.NozzleCast');
+});
+
 test('send() marks a 400 BadDeviceToken response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 400, responseBody: '{"reason":"BadDeviceToken"}' });
   const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
