@@ -138,6 +138,10 @@ that fetch, defaulting only that one field to `null` on failure while the numeri
 successfully fetched moments earlier are preserved and sent as normal. An image-endpoint hiccup
 now costs exactly one field, never the whole update.
 
+**Confirmed fixed against a real test print (2026-09-03):** progress and the countdown both
+updated correctly through the whole print, no recurrence of the frozen-0%/no-time symptom. This
+was the full explanation — no further change to the `remaining_time` sanity threshold was needed.
+
 Verified against the real API before writing any code: confirmed `POST /api/v1/printers/camera/
 stream-token` returns `{"token": "..."}` and needs no separate Authorization header on the two
 image endpoints (the stream token alone is sufficient); confirmed `cover` is a 512x512 PNG and
