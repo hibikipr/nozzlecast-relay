@@ -256,10 +256,21 @@ specifically to deliver that *specific activity's own* push token, via
      "aps": {
        "timestamp": <unix seconds>,
        "event": "update" | "end",
-       "content-state": { /* progress/stateLabel/startedAt as above */ }
+       "content-state": { /* progress/stateLabel/startedAt as above */ },
+       "dismissal-date": <unix seconds, "end" only>
      }
    }
    ```
+   **(Added 2026-09-03.)** `dismissal-date`, present only on `"end"`, tells the system to remove
+   the ended Live Activity from the Lock Screen 5 minutes after the push rather than Apple's
+   default ~4-hour window — this is the fallback for when the app never gets reopened; NozzleCast
+   also has its own local dismissal path (`PrintLiveActivityManager.sync()`, on foreground) that
+   clears an ended activity within ~30s regardless of this value. It's a **top-level `aps` key**
+   read directly by APNs/the system, not part of `content-state` — unlike `startedAt`/
+   `estimatedEndAt`, it is NOT Codable-decoded by the app's Swift struct, so it stays plain Unix
+   epoch seconds (same convention as `aps.timestamp` above), deliberately never run through
+   `toAppleReferenceTimestamp()` — doing so would repeat the same class of mistake as the
+   `startedAt` epoch bug earlier in this doc, just inverted.
 
 ## Error handling
 

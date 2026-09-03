@@ -150,6 +150,34 @@ test('buildActivityStatePayload supports event: "end" with a final stateLabel', 
   assert.equal(payload.aps['content-state'].stateLabel, 'Failed');
 });
 
+test('buildActivityStatePayload sets dismissal-date 5 minutes after "now", as plain Unix epoch seconds', () => {
+  // dismissal-date is a top-level aps key the system reads directly -- unlike content-state's
+  // own Date fields, it is NOT Codable-decoded by the app's Swift struct, so it must stay plain
+  // Unix epoch seconds (same convention as aps.timestamp), never toAppleReferenceTimestamp()'d.
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const now = new Date('2026-09-02T14:00:00.000Z');
+  const payload = buildActivityStatePayload({ event: 'end', startedAt, stateLabel: 'Complete', now });
+
+  const expectedUnixSeconds = Math.floor(now.getTime() / 1000) + 5 * 60;
+  assert.equal(payload.aps['dismissal-date'], expectedUnixSeconds);
+  // Sanity check it's the Unix convention, not the reference-date one: the two differ by the
+  // fixed 978307200s offset, so asserting equality against the plain Unix value is itself proof
+  // this isn't accidentally reference-date-encoded.
+  assert.notEqual(payload.aps['dismissal-date'], expectedUnixSeconds - 978307200);
+});
+
+test('buildActivityStatePayload omits dismissal-date for "update" -- only "end" is dismissing anything', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({ event: 'update', startedAt, stateLabel: 'Printing' });
+
+  assert.equal('dismissal-date' in payload.aps, false);
+});
+
+test('buildPushToStartPayload never sets dismissal-date -- starting an activity, not ending one', () => {
+  const payload = buildPushToStartPayload({ printerID: 'vich2c', printerName: 'Vic H2C' });
+  assert.equal('dismissal-date' in payload.aps, false);
+});
+
 test('buildActivityStatePayload defaults progress to 0 and stateLabel to "Printing"', () => {
   const startedAt = new Date('2026-09-02T13:23:34.000Z');
   const payload = buildActivityStatePayload({ event: 'update', startedAt });

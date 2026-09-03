@@ -13,6 +13,13 @@ function toAppleReferenceTimestamp(date) {
   return Math.floor(date.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET;
 }
 
+// How long after an "end" push the system should keep the ended Live Activity visible before
+// removing it from the Lock Screen, rather than Apple's own ~4-hour default. This is really only
+// for the case where the app never gets reopened -- NozzleCast has its own local dismissal path
+// (PrintLiveActivityManager.sync(), triggered on foreground) that clears an ended activity within
+// ~30s regardless of this value.
+const DISMISSAL_DELAY_MS = 5 * 60 * 1000;
+
 // jobName/estimatedEndAt/currentLayer/totalLayers/nozzleTempC/bedTempC/coverImage/liveSnapshot
 // all default to null -- a caller with no enrichment data (Bambuddy unreachable, printer not
 // found, image over budget even at the quality floor, etc.) gets exactly the old text-only
@@ -105,6 +112,12 @@ function buildActivityStatePayload({
       'content-state': buildContentState({
         startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot,
       }),
+      // dismissal-date is a TOP-LEVEL aps key, interpreted directly by APNs/the system -- unlike
+      // content-state's own Date fields, it is NOT Codable-decoded by the app's Swift struct, so
+      // it uses plain Unix epoch seconds (same convention as aps.timestamp above), not
+      // toAppleReferenceTimestamp(). Only meaningful for "end" -- an activity that isn't ending
+      // has nothing to dismiss.
+      ...(event === 'end' ? { 'dismissal-date': Math.floor((now.getTime() + DISMISSAL_DELAY_MS) / 1000) } : {}),
     },
   };
 }
