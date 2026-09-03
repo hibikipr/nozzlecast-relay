@@ -22,7 +22,7 @@ const { ActivityTokenStore } = require('../src/activityTokenStore');
 const { ApnsAuthProvider } = require('../src/apnsAuth');
 const { ApnsClient } = require('../src/apnsClient');
 const { normalizedID } = require('../src/parsing');
-const { buildPushToStartPayload, buildActivityStatePayload } = require('../src/payload');
+const { buildPushToStartPayload, buildActivityStatePayload, buildBackgroundWakePayload } = require('../src/payload');
 const { RUNS } = require('./replayRuns');
 
 function parseArgs(argv) {
@@ -61,13 +61,45 @@ ${Object.keys(RUNS).map((name) => `  - ${name}`).join('\n')}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitForActivityToken(activityTokenStore, printerID, timeoutMs) {
+// Mirrors index.js's sendBackgroundWake: a content-available push to every registered device
+// token, nudging the app to run PrintLiveActivityManager.sync / observe the new activity's
+// pushTokenUpdates so it calls /register-activity. The real relay retries this on every
+// update/end attempt made while no activity token is registered yet (see ARCHITECTURE.md's
+// "Background wake retry" section -- iOS's delivery of a background push is discretionary and
+// can be delayed) -- this script does the same below rather than sending it only once.
+async function sendBackgroundWake(deviceTokenStore, apnsClients, bundleId) {
+  const payload = buildBackgroundWakePayload();
+  for (const entry of deviceTokenStore.list()) {
+    const client = apnsClients[entry.environment] || apnsClients.production;
+    await client.send({
+      token: entry.token,
+      environment: entry.environment,
+      payload,
+      pushType: 'background',
+      topic: bundleId,
+    });
+  }
+}
+
+// Retries the background wake every WAKE_RETRY_MS while waiting, same reasoning as the real
+// relay's correction-tick retry -- a one-shot wake can be dropped/delayed by iOS with zero
+// relay-visible signal, confirmed live earlier tonight (see ARCHITECTURE.md).
+const WAKE_RETRY_MS = 15000;
+
+async function waitForActivityToken(activityTokenStore, printerID, timeoutMs, onRetryWake) {
   const deadline = Date.now() + timeoutMs;
+  let lastWakeAt = Date.now(); // already sent once, right before this call
   while (Date.now() < deadline) {
     await activityTokenStore.load();
     const entry = activityTokenStore.get(printerID);
     if (entry && entry.token) return entry;
-    process.stdout.write('.');
+    if (Date.now() - lastWakeAt >= WAKE_RETRY_MS) {
+      await onRetryWake();
+      lastWakeAt = Date.now();
+      process.stdout.write('w');
+    } else {
+      process.stdout.write('.');
+    }
     await sleep(2000);
   }
   return null;
@@ -95,12 +127,17 @@ async function main() {
 
   const tokenStore = new TokenStore(path.join(config.dataDir, 'tokens.json'));
   await tokenStore.load();
+  const deviceTokenStore = new TokenStore(path.join(config.dataDir, 'device-tokens.json'));
+  await deviceTokenStore.load();
   const activityTokenStore = new ActivityTokenStore(path.join(config.dataDir, 'activity-tokens.json'));
   await activityTokenStore.load();
 
   if (tokenStore.list().length === 0) {
     console.error('No push-to-start tokens registered in tokens.json -- open NozzleCast at least once so it registers one, then retry.');
     process.exit(1);
+  }
+  if (deviceTokenStore.list().length === 0) {
+    console.error('Warning: no device tokens registered in device-tokens.json -- the background wake that nudges the app into calling /register-activity will have nothing to send to. Update/end pushes will likely time out unless NozzleCast is already foregrounded.');
   }
 
   const apnsClients = {
@@ -147,8 +184,14 @@ async function main() {
         const result = await client.send({ token: entry.token, environment: entry.environment, payload });
         console.log(`  -> ${entry.environment} token ...${entry.token.slice(-8)}: ${result.ok ? 'OK' : `FAILED (${result.status}) ${result.body}`}`);
       }
-      process.stdout.write('Waiting for the app to register this activity\'s push token via /register-activity ');
-      const activity = await waitForActivityToken(activityTokenStore, printerID, args.timeoutMs);
+      await sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId);
+      process.stdout.write(`Waiting for the app to register this activity's push token via /register-activity (retrying the background wake every ${WAKE_RETRY_MS / 1000}s: "w") `);
+      const activity = await waitForActivityToken(
+        activityTokenStore,
+        printerID,
+        args.timeoutMs,
+        () => sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId),
+      );
       console.log('');
       if (!activity) {
         console.error(`Timed out after ${args.timeoutMs}ms -- open NozzleCast now if it isn't foregrounded, or rerun with a longer --timeout-ms. Continuing: update/end pushes below will just be skipped, same as a real print whose registration never lands in time.`);
@@ -159,10 +202,20 @@ async function main() {
     }
 
     await activityTokenStore.load();
-    const activity = activityTokenStore.get(printerID);
+    let activity = activityTokenStore.get(printerID);
     if (!activity || !activity.token) {
-      console.log(`[t=${step.atSec}s] ${step.kind} stateLabel=${step.stateLabel} progress=${step.progress} -- SKIPPED, no activity token registered`);
-      continue;
+      console.log(`[t=${step.atSec}s] ${step.kind} stateLabel=${step.stateLabel} progress=${step.progress} -- no activity token yet, retrying background wake and giving it up to ${args.timeoutMs}ms to land`);
+      activity = await waitForActivityToken(
+        activityTokenStore,
+        printerID,
+        args.timeoutMs,
+        () => sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId),
+      );
+      console.log('');
+      if (!activity) {
+        console.log(`  SKIPPED -- still no activity token after ${args.timeoutMs}ms`);
+        continue;
+      }
     }
 
     const now = new Date();

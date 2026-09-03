@@ -490,7 +490,15 @@ docker compose exec nozzlecast-relay node scripts/replay-run.js --run sam-p1s-fi
 docker compose exec nozzlecast-relay node scripts/replay-run.js --list
 ```
 
-**This creates a real, visible Live Activity on every registered device** — not a mock. Two runs
+**This creates a real, visible Live Activity on every registered device** — not a mock, and it
+sends the same background-wake push (retried every 15s while waiting, mirroring the real relay's
+own correction-tick retry) that production does, so it behaves identically whether or not
+NozzleCast is already foregrounded when the push-to-start lands. An earlier version of this
+script forgot the wake push entirely — confirmed live: push-to-start rendered but every
+subsequent update was skipped for the whole run, because nothing ever nudged the app into
+observing the new activity and calling `/register-activity`.
+
+Two runs
 ship today: `sam-p1s-finish` (full happy-path RUNNING → FINISH climb to completion) and
 `sam-p1s-paused-stopped` (RUNNING → PAUSE → FAILED-with-no-HMS-issue, exercising the "Paused" and
 "Stopped" labels). `replayRuns.test.js` sanity-checks the run data itself (ordering, progress
