@@ -1,5 +1,7 @@
 const { normalizedID } = require('./parsing');
-const { classifyTransition, hmsErrorCodes, RUNNING, PAUSE } = require('./printerStateClassifier');
+const { classifyTransition, RUNNING, PAUSE } = require('./printerStateClassifier');
+const { HmsIssueDebouncer } = require('./hmsIssueDebouncer');
+const { badgeFromEntries } = require('./hmsIssues');
 
 // Polls Bambuddy's own API directly for printer state, as an alternative trigger source to
 // ntfy (see NTFY_TRIGGER_ENABLED/BAMBUDDY_POLL_TRIGGER_ENABLED in config.js -- both can run
@@ -9,6 +11,10 @@ const { classifyTransition, hmsErrorCodes, RUNNING, PAUSE } = require('./printer
 // spurious duplicate push-to-start -- it just establishes a baseline to diff future polls
 // against. This also means transitions are inherently deduped by construction (a callback only
 // fires when the state actually changes), unlike the ntfy path's title-based StartEventDedupe.
+//
+// Every ctx passed to a callback also carries issueSeverity/issueCount (see hmsIssues.js),
+// computed from HmsIssueDebouncer's currently-confirmed HMS entries while the printer is active
+// -- null/null otherwise (including on finish/failed, where a badge no longer means anything).
 class BambuddyPoller {
   constructor({
     bambuddyClient,
@@ -19,9 +25,9 @@ class BambuddyPoller {
     onResume,
     onFinish,
     onFailed,
-    onError,
     onCorrection,
     now = () => Date.now(),
+    hmsIssueDebouncer = new HmsIssueDebouncer(),
   }) {
     this.bambuddyClient = bambuddyClient;
     this.intervalMs = intervalMs;
@@ -31,11 +37,11 @@ class BambuddyPoller {
     this.onResume = onResume;
     this.onFinish = onFinish;
     this.onFailed = onFailed;
-    this.onError = onError;
     this.onCorrection = onCorrection;
     this.now = now;
+    this.hmsIssueDebouncer = hmsIssueDebouncer;
     this.timer = null;
-    this.knownPrinters = new Map(); // printerID -> { state, hmsErrorCodes, lastCorrectionAt }
+    this.knownPrinters = new Map(); // printerID -> { state, lastCorrectionAt }
   }
 
   start() {
@@ -72,10 +78,9 @@ class BambuddyPoller {
     }
 
     const previous = this.knownPrinters.get(printerID);
-    const currentErrorCodes = hmsErrorCodes(status);
 
     if (!previous) {
-      this.knownPrinters.set(printerID, { state: status.state, hmsErrorCodes: currentErrorCodes, lastCorrectionAt: null });
+      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: null });
       return;
     }
 
@@ -83,14 +88,22 @@ class BambuddyPoller {
     if (transition) {
       console.log(`Bambuddy poller: printer "${printer.name}" state ${previous.state} -> ${status.state} (${transition})`);
     }
-    const ctx = { printerID, name: printer.name, status };
+
+    const isActive = status.state === RUNNING || status.state === PAUSE;
+
+    if (transition === 'start') {
+      // A fresh start means a fresh activity -- whatever was tracked belonged to the previous
+      // job (see HmsIssueDebouncer.reset()'s own reasoning). Observe this tick's own entries
+      // fresh afterward so the badge, if any, starts its own confirm streak from this print.
+      this.hmsIssueDebouncer.reset(printerID);
+    }
+    const confirmedIssues = isActive ? this.hmsIssueDebouncer.observe(printerID, status.hms_errors || []) : [];
+    const badge = badgeFromEntries(confirmedIssues);
+    const ctx = { printerID, name: printer.name, status, ...badge };
 
     if (transition === 'start') {
       await this.onStart(ctx);
-      // A fresh start supersedes any other same-tick classification (a stray leftover HMS error
-      // from the previous job, or an immediate correction) -- capture the baseline fresh here
-      // and skip the rest of this tick's checks for this printer.
-      this.knownPrinters.set(printerID, { state: status.state, hmsErrorCodes: currentErrorCodes, lastCorrectionAt: this.now() });
+      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: this.now() });
       return;
     }
     if (transition === 'pause') await this.onPause(ctx);
@@ -98,21 +111,13 @@ class BambuddyPoller {
     else if (transition === 'finish') await this.onFinish(ctx);
     else if (transition === 'failed') await this.onFailed(ctx);
 
-    const isActive = status.state === RUNNING || status.state === PAUSE;
-
-    const newErrorCodes = [...currentErrorCodes].filter((code) => !previous.hmsErrorCodes.has(code));
-    if (isActive && newErrorCodes.length > 0) {
-      console.log(`Bambuddy poller: new HMS error code(s) for printer "${printer.name}": ${newErrorCodes.join(', ')}`);
-      await this.onError({ ...ctx, newErrorCodes });
-    }
-
     let lastCorrectionAt = previous.lastCorrectionAt;
     if (isActive && this.now() - (lastCorrectionAt || 0) >= this.correctionIntervalMs) {
       await this.onCorrection(ctx);
       lastCorrectionAt = this.now();
     }
 
-    this.knownPrinters.set(printerID, { state: status.state, hmsErrorCodes: currentErrorCodes, lastCorrectionAt });
+    this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt });
   }
 }
 

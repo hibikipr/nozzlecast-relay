@@ -24,8 +24,8 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   const state = payload.aps['content-state'];
 
   assert.deepEqual(Object.keys(state).sort(), [
-    'bedTempC', 'coverImage', 'currentLayer', 'estimatedEndAt', 'jobName',
-    'liveSnapshot', 'nozzleTempC', 'progress', 'startedAt', 'stateLabel', 'totalLayers',
+    'bedTempC', 'coverImage', 'currentLayer', 'estimatedEndAt', 'issueCount', 'issueSeverity',
+    'jobName', 'liveSnapshot', 'nozzleTempC', 'progress', 'startedAt', 'stateLabel', 'totalLayers',
   ].sort());
   assert.equal(state.progress, 0);
   assert.equal(state.stateLabel, 'Printing');
@@ -39,6 +39,8 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   assert.equal(state.bedTempC, null);
   assert.equal(state.coverImage, null);
   assert.equal(state.liveSnapshot, null);
+  assert.equal(state.issueSeverity, null);
+  assert.equal(state.issueCount, null);
 });
 
 test('buildPushToStartPayload sends startedAt as a Foundation-reference-date number, not Unix epoch or a date string', () => {
@@ -221,4 +223,29 @@ test('buildActivityStatePayload passes coverImage/liveSnapshot base64 strings th
 
   assert.equal(payload.aps['content-state'].coverImage, 'Zm9v');
   assert.equal(payload.aps['content-state'].liveSnapshot, 'YmFy');
+});
+
+test('buildActivityStatePayload passes issueSeverity/issueCount through unchanged', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({
+    event: 'update',
+    startedAt,
+    issueSeverity: 'warning',
+    issueCount: 2,
+  });
+
+  assert.equal(payload.aps['content-state'].issueSeverity, 'warning');
+  assert.equal(payload.aps['content-state'].issueCount, 2);
+});
+
+test('buildPushToStartPayload passes issueSeverity/issueCount through unchanged', () => {
+  const payload = buildPushToStartPayload({
+    printerID: 'vich2c',
+    printerName: 'Vic H2C',
+    issueSeverity: 'error',
+    issueCount: 1,
+  });
+
+  assert.equal(payload.aps['content-state'].issueSeverity, 'error');
+  assert.equal(payload.aps['content-state'].issueCount, 1);
 });

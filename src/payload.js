@@ -40,6 +40,8 @@ function buildContentState({
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
+  issueSeverity = null,
+  issueCount = null,
 }) {
   return {
     progress,
@@ -53,6 +55,8 @@ function buildContentState({
     bedTempC,
     coverImage,
     liveSnapshot,
+    issueSeverity,
+    issueCount,
   };
 }
 
@@ -68,13 +72,15 @@ function buildPushToStartPayload({
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
+  issueSeverity = null,
+  issueCount = null,
 }) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
       'content-state': buildContentState({
-        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot,
+        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
       }),
       'attributes-type': 'PrintActivityAttributes',
       attributes: { printerID, printerName },
@@ -103,6 +109,8 @@ function buildActivityStatePayload({
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
+  issueSeverity = null,
+  issueCount = null,
   now = new Date(),
 }) {
   return {
@@ -110,7 +118,7 @@ function buildActivityStatePayload({
       timestamp: Math.floor(now.getTime() / 1000),
       event,
       'content-state': buildContentState({
-        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot,
+        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
       }),
       // dismissal-date is a TOP-LEVEL aps key, interpreted directly by APNs/the system -- unlike
       // content-state's own Date fields, it is NOT Codable-decoded by the app's Swift struct, so

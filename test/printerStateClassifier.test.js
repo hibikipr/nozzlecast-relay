@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { classifyTransition, hmsErrorCodes } = require('../src/printerStateClassifier');
+const { classifyTransition } = require('../src/printerStateClassifier');
 
 test('classifyTransition detects a start (any non-RUNNING state -> RUNNING)', () => {
   assert.equal(classifyTransition('FINISH', 'RUNNING'), 'start');
@@ -34,14 +34,4 @@ test('classifyTransition returns null for an unrecognized/irrelevant transition'
 test('classifyTransition never re-fires finish/failed once already in that state', () => {
   assert.equal(classifyTransition('FINISH', 'FINISH'), null);
   assert.equal(classifyTransition('FAILED', 'FAILED'), null);
-});
-
-test('hmsErrorCodes extracts the code field from each entry', () => {
-  const status = { hms_errors: [{ code: '0x10007', severity: 5 }, { code: '0x20001', severity: 3 }] };
-  assert.deepEqual(hmsErrorCodes(status), new Set(['0x10007', '0x20001']));
-});
-
-test('hmsErrorCodes returns an empty set when hms_errors is missing or empty', () => {
-  assert.deepEqual(hmsErrorCodes({}), new Set());
-  assert.deepEqual(hmsErrorCodes({ hms_errors: [] }), new Set());
 });

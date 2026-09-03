@@ -30,13 +30,4 @@ function classifyTransition(previousState, currentState) {
   return null;
 }
 
-// Bambuddy's raw status DTO carries hms_errors as a list of objects with a `code` field (e.g.
-// "0x10007"). Confirmed live that this list is NOT necessarily empty at rest and is NOT
-// necessarily cleared the moment a print ends -- so a caller must diff against a baseline
-// captured at the time it starts observing a printer (or at print start), not just treat "list
-// is non-empty" as "a new error just happened."
-function hmsErrorCodes(status) {
-  return new Set((status.hms_errors || []).map((entry) => entry.code));
-}
-
-module.exports = { classifyTransition, hmsErrorCodes, RUNNING, PAUSE, FINISH, FAILED };
+module.exports = { classifyTransition, RUNNING, PAUSE, FINISH, FAILED };

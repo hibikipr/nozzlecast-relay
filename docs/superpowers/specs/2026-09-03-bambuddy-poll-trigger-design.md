@@ -137,12 +137,20 @@ redundant fetch of the exact same data a moment later.
   layer (the only thing this relay can see) doesn't expose anywhere, in `/status` or
   automatically in `/print-log`. Not fixable from the relay side without a different data source.
 
-## HMS-error → "Error" update: disabled after a real false positive (2026-09-03)
+## HMS-error → "Error" update: disabled, then superseded by a proper badge (2026-09-03)
+
+**Superseded — see `2026-09-03-hms-severity-badge-design.md`.** The section below is kept for the
+investigation history; the raw-presence-diffing `onError`/`hmsErrorCodes()` path it describes no
+longer exists in the code at all (not just disabled) — `BambuddyPoller` now feeds every tick's
+`hms_errors` through `HmsIssueDebouncer` (fixing problem 1 below) and `severityToTier`/
+`badgeFromEntries` (fixing problem 2, using Bambuddy's own confirmed severity scale rather than
+a guessed direction), producing `issueSeverity`/`issueCount` on every callback's `ctx` instead of
+a single `event: "update"`/`stateLabel: "Error"` push.
 
 The `onError` path — new HMS code while active → `event: "update"`, `stateLabel: "Error"` — was
-confirmed broken against real traffic and is now a **no-op** in `index.js` (detection/logging in
-`BambuddyPoller` is untouched; only acting on it is disabled). Two independent problems, both
-confirmed with real evidence, not assumed:
+confirmed broken against real traffic and was made a **no-op** in `index.js` (detection/logging
+in `BambuddyPoller` was left untouched; only acting on it was disabled). Two independent
+problems, both confirmed with real evidence, not assumed:
 
 1. **`hms_errors` reporting is itself flaky.** The same code (`0x10007`) was observed present,
    then absent, then present again across polls seconds apart with nothing about the printer

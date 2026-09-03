@@ -191,7 +191,7 @@ async function main() {
     }
   };
 
-  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null }) => {
+  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null }) => {
     const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus });
     const payload = buildPushToStartPayload({
       printerID,
@@ -203,6 +203,8 @@ async function main() {
       nozzleTempC: enrichment?.nozzleTempC ?? null,
       bedTempC: enrichment?.bedTempC ?? null,
       coverImage: enrichment?.coverImage ?? null,
+      issueSeverity,
+      issueCount,
     });
     for (const entry of tokenStore.list()) {
       try {
@@ -261,7 +263,9 @@ async function main() {
   // ntfy-only and optional -- it's used solely as a progress fallback when Bambuddy enrichment
   // itself fails, since the poller path already gets its progress from Bambuddy directly and
   // has no title-based percentage to fall back to anyway.
-  const sendActivityUpdate = async ({ event, stateLabel, printerID, name, title = null, prefetchedStatus = null }) => {
+  const sendActivityUpdate = async ({
+    event, stateLabel, printerID, name, title = null, prefetchedStatus = null, issueSeverity = null, issueCount = null,
+  }) => {
     const activity = activityTokenStore.get(printerID);
     if (!activity || !activity.token) {
       console.log(`No activity token registered for printer "${name}", skipping ${event} push`);
@@ -291,6 +295,8 @@ async function main() {
       bedTempC: enrichment?.bedTempC ?? null,
       coverImage: enrichment?.coverImage ?? null,
       liveSnapshot: enrichment?.liveSnapshot ?? null,
+      issueSeverity,
+      issueCount,
     });
     try {
       const client = apnsClients[activity.environment] || apnsClients.production;
@@ -326,48 +332,41 @@ async function main() {
     console.log('ntfy trigger disabled (NTFY_TRIGGER_ENABLED=false)');
   }
 
-  // Polls Bambuddy's own API directly for start/pause/resume/finish/failed/HMS-error state
-  // transitions, plus a periodic correction push (fresh estimatedEndAt etc.) on a fixed interval
-  // rather than tying updates to Bambuddy's own ntfy percentage milestones -- see
-  // bambuddyPoller.js and printerStateClassifier.js for the transition/error-diffing logic.
+  // Polls Bambuddy's own API directly for start/pause/resume/finish/failed state transitions,
+  // plus a periodic correction push (fresh estimatedEndAt etc.) on a fixed interval rather than
+  // tying updates to Bambuddy's own ntfy percentage milestones -- see bambuddyPoller.js and
+  // printerStateClassifier.js for the transition logic. Every ctx the poller hands to a callback
+  // also carries issueSeverity/issueCount (see hmsIssues.js/hmsIssueDebouncer.js) -- the
+  // severity-filtered, debounced replacement for the earlier naive "any new HMS code = Error"
+  // version, which was confirmed live to be a false-positive source (see the design doc's "HMS
+  // error -> Error update: disabled after a real false positive" section) and has since been
+  // superseded by this badge instead of just staying disabled.
   const poller = config.bambuddyPollTriggerEnabled
     ? new BambuddyPoller({
         bambuddyClient,
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
-        onStart: async ({ printerID, name, status }) => {
+        onStart: async ({ printerID, name, status, issueSeverity, issueCount }) => {
           await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
-          await sendPushToStart({ printerID, name, prefetchedStatus: status });
+          await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount });
         },
-        onPause: async ({ printerID, name, status }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status }),
-        onResume: async ({ printerID, name, status }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status }),
-        onFinish: async ({ printerID, name, status }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status }),
-        onFailed: async ({ printerID, name, status }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Failed', printerID, name, prefetchedStatus: status }),
-        // Deliberately a no-op as of 2026-09-03: confirmed live that HMS-error-triggered
-        // "Error" Live Activity updates were a real false-positive source, not a genuine
-        // fault -- Bambuddy's own dashboard showed this printer healthy/idle (green, no HMS
-        // fault banner) with only a routine post-print "plate not cleared" reminder at the
-        // exact moment the relay had a standing HMS code and was still labeling the activity
-        // "Error". Separately confirmed the underlying code (hms_errors reporting) is itself
-        // flaky against the real API -- the same code was observed present, then absent, then
-        // present again across polls seconds apart with nothing about the printer changing,
-        // so a naive single-poll diff treats routine flakiness as a fresh error every time it
-        // reappears. BambuddyPoller still detects and logs new HMS codes (see its "new HMS
-        // error code(s)" log line) for diagnostics -- only acting on it by pushing an update is
-        // disabled, until there's a debounced (require N consecutive misses before forgetting a
-        // code) and/or severity-filtered redesign backed by real data, not another guess.
-        onError: async () => {},
-        onCorrection: async ({ printerID, name, status }) =>
+        onPause: async ({ printerID, name, status, issueSeverity, issueCount }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        onResume: async ({ printerID, name, status, issueSeverity, issueCount }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        onFinish: async ({ printerID, name, status, issueSeverity, issueCount }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        onFailed: async ({ printerID, name, status, issueSeverity, issueCount }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Failed', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        onCorrection: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({
             event: 'update',
             stateLabel: status.state === PAUSE ? 'Paused' : 'Printing',
             printerID,
             name,
             prefetchedStatus: status,
+            issueSeverity,
+            issueCount,
           }),
       })
     : null;

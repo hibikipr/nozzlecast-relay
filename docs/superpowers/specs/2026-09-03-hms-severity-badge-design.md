@@ -91,6 +91,20 @@ doesn't need its own separate push type, just two more fields on the existing up
 
 ## Status
 
-Not yet implemented. `e754b3d` already disabled the broken naive version; this spec defines the
-real replacement once ready, gated on severity (not just presence) and reusing Bambuddy's own
-already-proven noise-filtering principle.
+**Implemented.** `hmsIssues.js` (`severityToTier`/`badgeFromEntries`, the severity-tier mapping
+above) and `hmsIssueDebouncer.js` (`HmsIssueDebouncer`, threshold-2-by-default confirm/clear
+streaks per code) are both new, pure/stateful modules respectively, wired into `BambuddyPoller`:
+every tick, while a printer is active (`RUNNING`/`PAUSE`), its raw `hms_errors` are `observe()`d
+and the resulting confirmed set is turned into `{issueSeverity, issueCount}` on the `ctx` handed
+to every callback (`start`/`pause`/`resume`/`finish`/`failed`/`correction` — `null`/`null` on
+`finish`/`failed`, since a badge means nothing once the print's over). `index.js` threads these
+straight through `sendPushToStart`/`sendActivityUpdate` into `payload.js`'s `content-state`. The
+old raw-presence-diffing `hmsErrorCodes()`/`onError` path from `e754b3d` is removed outright
+(not just left disabled) now that this supersedes it entirely.
+
+Verified against the real live regression case before deploying: `0x10007`/severity 5 (the exact
+incident that broke the earlier version) still produces `{issueSeverity: null, issueCount: null}`
+even once confirmed present across two polls — Info stays excluded regardless of debounce state.
+A synthetic real severity-1 entry correctly produces `{issueSeverity: "error", issueCount: 1}`.
+
+177/177 tests pass.

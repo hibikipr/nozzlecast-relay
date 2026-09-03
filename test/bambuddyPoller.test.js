@@ -14,7 +14,7 @@ function fakeClient({ printers, statusByPrinterId }) {
 }
 
 function recordingCallbacks() {
-  const calls = { start: [], pause: [], resume: [], finish: [], failed: [], error: [], correction: [] };
+  const calls = { start: [], pause: [], resume: [], finish: [], failed: [], correction: [] };
   return {
     calls,
     onStart: async (ctx) => calls.start.push(ctx),
@@ -22,7 +22,6 @@ function recordingCallbacks() {
     onResume: async (ctx) => calls.resume.push(ctx),
     onFinish: async (ctx) => calls.finish.push(ctx),
     onFailed: async (ctx) => calls.failed.push(ctx),
-    onError: async (ctx) => calls.error.push(ctx),
     onCorrection: async (ctx) => calls.correction.push(ctx),
   };
 }
@@ -84,40 +83,53 @@ test('transitions to FINISH/FAILED fire onFinish/onFailed', async () => {
   assert.equal(cb.calls.failed.length, 0);
 });
 
-test('a new HMS error code while active fires onError, a pre-existing one does not', async () => {
+test('issueSeverity/issueCount are null/null on ctx until an HMS entry clears the debounce threshold', async () => {
   const client = fakeClient({
     printers: [{ id: 1, name: 'Sam P1S' }],
-    statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [{ code: 'PRE_EXISTING' }] } },
+    statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [{ code: 'A', severity: 1 }] } },
   });
   const cb = recordingCallbacks();
-  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 0, ...cb });
 
-  await poller.tick(); // baseline includes PRE_EXISTING already
+  await poller.tick(); // baseline (no ctx observed yet)
+  await poller.tick(); // first real observation of 'A' -- not confirmed yet (default threshold 2)
+  assert.equal(cb.calls.correction[0].issueSeverity, null);
 
-  client.status = async () => ({ state: 'RUNNING', hms_errors: [{ code: 'PRE_EXISTING' }] });
-  await poller.tick(); // same error still present -> no new event
-  assert.equal(cb.calls.error.length, 0);
-
-  client.status = async () => ({ state: 'RUNNING', hms_errors: [{ code: 'PRE_EXISTING' }, { code: 'NEW_ONE' }] });
-  await poller.tick(); // a genuinely new code appears
-  assert.equal(cb.calls.error.length, 1);
-  assert.deepEqual(cb.calls.error[0].newErrorCodes, ['NEW_ONE']);
+  await poller.tick(); // second consecutive observation -- confirmed now
+  assert.equal(cb.calls.correction[1].issueSeverity, 'error');
+  assert.equal(cb.calls.correction[1].issueCount, 1);
 });
 
-test('a fresh start resets the HMS baseline so a leftover error from the last job doesn\'t fire', async () => {
+test('a fresh start resets the HMS issue tracker so a leftover error from the last job isn\'t instantly confirmed', async () => {
   const client = fakeClient({
     printers: [{ id: 1, name: 'Sam P1S' }],
-    statusByPrinterId: { 1: { state: 'FINISH', hms_errors: [{ code: 'STALE_ERROR' }] } },
+    statusByPrinterId: { 1: { state: 'FINISH', hms_errors: [{ code: 'STALE_ERROR', severity: 1 }] } },
   });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 0, ...cb });
+
+  await poller.tick(); // baseline: FINISH, with STALE_ERROR present (never observed -- not active)
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [{ code: 'STALE_ERROR', severity: 1 }] });
+  await poller.tick(); // start -- resets the tracker, then a single fresh observation, not confirmed
+
+  assert.equal(cb.calls.start.length, 1);
+  assert.equal(cb.calls.start[0].issueSeverity, null, 'a single post-start observation should not be confirmed yet');
+});
+
+test('badge fields never appear on finish/failed ctx even with active hms_errors', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [{ code: 'A', severity: 1 }] } } });
   const cb = recordingCallbacks();
   const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
 
-  await poller.tick(); // baseline: FINISH, with STALE_ERROR present
-  client.status = async () => ({ state: 'RUNNING', hms_errors: [{ code: 'STALE_ERROR' }] });
-  await poller.tick(); // start -- STALE_ERROR is now the new baseline, not a "new" error
+  await poller.tick(); // baseline
+  await poller.tick(); // observe 1
+  await poller.tick(); // observe 2 -- confirmed
+  client.status = async () => ({ state: 'FAILED', hms_errors: [{ code: 'A', severity: 1 }] });
+  await poller.tick(); // fails while the code is still technically present
 
-  assert.equal(cb.calls.start.length, 1);
-  assert.equal(cb.calls.error.length, 0);
+  assert.equal(cb.calls.failed.length, 1);
+  assert.equal(cb.calls.failed[0].issueSeverity, null);
+  assert.equal(cb.calls.failed[0].issueCount, null);
 });
 
 test('onCorrection fires only after correctionIntervalMs has elapsed since the last one', async () => {
@@ -146,16 +158,15 @@ test('onCorrection fires only after correctionIntervalMs has elapsed since the l
   assert.equal(cb.calls.correction.length, 2);
 });
 
-test('onCorrection and onError never fire while FINISH/FAILED (not "active")', async () => {
+test('onCorrection never fires while FINISH/FAILED (not "active")', async () => {
   const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'FINISH', hms_errors: [] } } });
   const cb = recordingCallbacks();
   const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 0, ...cb });
 
   await poller.tick(); // baseline
-  client.status = async () => ({ state: 'FINISH', hms_errors: [{ code: 'X' }] });
-  await poller.tick(); // still FINISH, a "new" error code appears but printer isn't active
+  client.status = async () => ({ state: 'FINISH', hms_errors: [{ code: 'X', severity: 1 }] });
+  await poller.tick(); // still FINISH -- printer isn't active
 
-  assert.equal(cb.calls.error.length, 0);
   assert.equal(cb.calls.correction.length, 0);
 });
 
