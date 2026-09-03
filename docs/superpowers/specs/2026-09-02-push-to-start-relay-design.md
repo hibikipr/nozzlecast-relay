@@ -339,20 +339,23 @@ Volume: `/data` (holds `tokens.json`, `device-tokens.json`, and `activity-tokens
 - No CI / no automated integration test against production APNs — disproportionate for a
   single-operator relay with no CI system in place. (GitHub's Dependabot has flagged 2 moderate
   vulnerabilities on this repo as of 2026-09-02, not yet triaged.)
-- 92/92 tests passing as of the per-activity-token change (2026-09-02/03).
+- 185/185 tests passing repo-wide as of 2026-09-03 (92/92 as of the original per-activity-token
+  change; the rest came from the Bambuddy enrichment, images, poll-trigger, and severity-badge
+  follow-ups — see their own design docs).
 
 ## Open questions / follow-ups (not blocking)
 
-- Once the per-activity-token update/end path is confirmed working end-to-end on a real print,
-  remove the NSE's now-redundant `Activity.request()` start attempt (and its `NCDEBUG` logging)
-  from `NozzleCastNSE/NotificationService.swift`, and update NozzleCast's own `ARCHITECTURE.md`
-  to describe the relay as the actual mechanism instead of documenting the gap.
-- Whether the background-wake push (`/register-device`) is still pulling its weight now that
-  progress/end pushes go straight to a per-activity token: it may still matter for the initial
-  `PrintLiveActivityManager.sync` right after start (so the app's own UI/state — outside the
-  Live Activity itself — catches up promptly), but that's unconfirmed. Worth revisiting once the
-  per-activity-token path has a few real prints' worth of confirmed behavior.
+- **Resolved:** the NSE never actually called `Activity.request()` to start an activity locally —
+  that path was already removed before this design was written (confirmed: `NotificationService.swift`
+  has no `Activity.request` call at all today, only `.update()`/`.end()` on an activity it finds
+  locally). NozzleCast's `ARCHITECTURE.md` has been updated to describe the relay as the actual
+  mechanism.
+- **Resolved:** the background-wake push (`/register-device`) is kept as a secondary fallback, not
+  removed — confirmed across many real prints that the per-activity-token path (`/register-activity`)
+  is what actually carries progress/end updates end-to-end while the phone stays locked, with
+  background-wake covering the narrower case of keeping a locally-created/backgrounded activity in
+  sync. Both are documented as such in `ARCHITECTURE.md` and this repo's README.
 - `DELETE /register` on app-side sign-out isn't wired into NozzleCast in v1 (there's no
   sign-out concept yet) — dead tokens are pruned reactively via APNs error responses instead.
   Same applies to `/register-device`; `/register-activity` has no `DELETE` at all by design (see
-  Architecture → HTTP API).
+  Architecture → HTTP API). Still true, still not blocking.

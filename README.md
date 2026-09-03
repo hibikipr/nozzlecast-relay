@@ -1,10 +1,14 @@
 # nozzlecast-relay
 
 ActivityKit push-to-start relay for [NozzleCast](https://github.com/hibikipr/NozzleCast). Watches
-Bambuddy's ntfy topic directly and fires an APNs push-to-start request the moment a print starts,
-so NozzleCast's Live Activity appears even while the phone is locked — something the app's own
-Notification Service Extension cannot do (`Activity.request()` only succeeds while the app is
-foreground; see NozzleCast's `ARCHITECTURE.md`).
+for a print starting — via Bambuddy's ntfy topic, or by polling Bambuddy's own API directly and
+diffing `gcode_state` (the trigger actually in use today; see `BAMBUDDY_POLL_TRIGGER_ENABLED`
+below) — and fires an APNs push-to-start request the moment it does, so NozzleCast's Live Activity
+appears even while the phone is locked — something the app's own Notification Service Extension
+cannot do (`Activity.request()` only succeeds while the app is foreground; see NozzleCast's
+`ARCHITECTURE.md`). From there the relay also owns every progress/pause/error/end update for the
+activity's whole lifetime, pushed directly to that activity's own per-activity APNs token — not
+just the initial start.
 
 Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md),
 plus follow-ups for [Bambuddy API enrichment](docs/superpowers/specs/2026-09-03-bambuddy-enrichment-design.md),
@@ -72,20 +76,19 @@ docker compose up -d --build
 - `POST /register-device` / `DELETE /register-device` — same shape and auth as `/register`, but
   for NozzleCast's plain APNs device token rather than a Live Activity push-to-start token. On
   every print-start event the relay also sends a `content-available` background push to each
-  registered device token, waking the app so its own `PrintLiveActivityManager.sync` runs — the
-  only thing that makes a push-to-start-created activity visible/updatable anywhere (app, NSE, or
-  widget extension all query `Activity<PrintActivityAttributes>.activities`, which otherwise stays
-  empty for an activity the app itself never ran code for). See NozzleCast's `ARCHITECTURE.md`.
+  registered device token, waking the app so its own `PrintLiveActivityManager.sync` runs — a
+  secondary fallback that keeps a locally-created/backgrounded activity in sync, not the primary
+  mechanism (that's `/register-activity` below). See NozzleCast's `ARCHITECTURE.md`.
 - `POST /register-activity` — body `{ "token": string, "printerID": string, "environment": "sandbox" | "production" }`,
   same auth. Registers the *activity's own* per-activity push token (from
   `Activity<PrintActivityAttributes>.activityUpdates` → `activity.pushTokenUpdates` on the app
   side), keyed by printerID rather than by token — a printer only ever has one live activity at a
   time, and each new print's registration fully replaces whatever token was stored for that
-  printer. Once registered, the relay sends progress/completion updates directly to this token as
-  Bambuddy reports them (`event: "update"` for a percentage-progress notification, `event: "end"`
-  for a completion/failure/cancellation one), rather than depending on the app, NSE, or widget
-  ever running again after the initial push-to-start — see the design spec for why that dependency
-  doesn't hold up in practice. `printerID` should be the same value the app received in the
-  push-to-start payload's `attributes.printerID` (the relay re-normalizes it the same way
-  regardless, so an exact match isn't required).
+  printer. Once registered, this is the token the relay pushes every `update`/`end` event to for
+  that printer's whole print — triggered by real Bambuddy state transitions (start/pause/resume/
+  finish/failed) and new HMS issues when polling is enabled, or by `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS`
+  otherwise, not by any particular progress percentage — rather than depending on the app, NSE, or
+  widget ever running again after the initial push-to-start. `printerID` should be the same value
+  the app received in the push-to-start payload's `attributes.printerID` (the relay re-normalizes
+  it the same way regardless, so an exact match isn't required).
 - `GET /healthz` — unauthenticated.

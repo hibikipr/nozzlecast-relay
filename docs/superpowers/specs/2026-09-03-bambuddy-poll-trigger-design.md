@@ -248,9 +248,27 @@ looked "frozen" for a more precise reason than just "corrections are rare" — `
 `TimelineView(.periodic(...))` isn't one of the primitives Apple's Live Activity rendering
 guarantees continuous system-driven refresh for (unlike `Text(.timer)` or
 `ProgressView(timerInterval:)`, which is why the countdown clock and progress *bar* kept moving
-smoothly on their own). A 1-minute correction masks this by making the jumps small/frequent
-enough to look smooth, but doesn't fix the underlying cause — being tracked separately on the app
-side (replacing the bespoke `TimelineView` with something Apple treats as genuinely continuous).
+smoothly on their own). **Resolved (2026-09-03, NozzleCast side):** the widget no longer tries to
+interpolate a live percentage at all — both the bar and the number now read the printer's actual
+last-reported `progress` directly, and the countdown clock was replaced with a localized
+"Est. finish" time (date-styled `Text`, one of the primitives that *is* guaranteed continuous
+refresh). The 1-minute correction interval above is still what keeps that real progress fresh
+between real transitions.
+
+## `remaining_time` staying implausible for an entire print (2026-09-03)
+
+Confirmed not a relay bug: for at least one specific test G-code file Victor kept reprinting
+("No AMS Version..." / "Grumpy Unicorn — Plate 6"), Bambuddy's `remaining_time` never moved off
+~3 seconds for the print's entire duration, regardless of real progress climbing from 0% to 63%+
+— reproduced identically across two separate full test runs. The `estimatedEndAt` sanity check
+(reject an implausibly small `remaining_time`) is behaving exactly as designed here: "3 seconds
+left" is exactly as implausible at 63% progress as it is at 0%, and no threshold adjustment would
+call it trustworthy. `estimatedEndAt` is correctly `null` for every push of that specific print —
+either the slicer's embedded time estimate is broken for that file, or Bambuddy's remaining-time
+calculation doesn't work for it; not something fixable from the relay side. Confirmed later the
+same night against a different, real print job all the way to completion: `estimatedEndAt`
+populated correctly and the widget's "Est. finish" display worked as intended — this really was a
+test-file-specific data gap, not a systemic bug.
 
 ## Not yet done / open items
 
@@ -264,6 +282,8 @@ side (replacing the bespoke `TimelineView` with something Apple treats as genuin
 cover: baseline-only first observation, every transition type, resume correctly distinguished
 from a fresh start (a real bug caught here — `PAUSE -> RUNNING` was initially misclassified as
 `start` before `resume` was checked first), new-vs-stale HMS error codes, a fresh start resetting
-the HMS baseline, correction timing via a fake clock, and that a single printer's fetch failure
-doesn't affect others or crash the tick loop. `config.test.js` covers both toggles' default and
-explicit-value behavior. 150/150 tests pass overall.
+the HMS baseline, correction timing via a fake clock, `priorIssueSeverity`/`priorProgress`
+correctly reflecting the tick *before* a FAILED transition rather than Bambuddy's own
+already-reset current values, and that a single printer's fetch failure doesn't affect others or
+crash the tick loop. `config.test.js` covers both toggles' default and explicit-value behavior.
+185/185 tests pass overall (repo-wide, not just this file's suites).
