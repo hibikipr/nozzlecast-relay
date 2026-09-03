@@ -6,7 +6,11 @@ so NozzleCast's Live Activity appears even while the phone is locked — somethi
 Notification Service Extension cannot do (`Activity.request()` only succeeds while the app is
 foreground; see NozzleCast's `ARCHITECTURE.md`).
 
-Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md)
+Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md),
+plus follow-ups for [Bambuddy API enrichment](docs/superpowers/specs/2026-09-03-bambuddy-enrichment-design.md),
+[Live Activity images](docs/superpowers/specs/2026-09-03-live-activity-images-design.md), and the
+[Bambuddy-poll trigger](docs/superpowers/specs/2026-09-03-bambuddy-poll-trigger-design.md) (an
+alternative to ntfy for start/pause/error/stop/finish detection).
 
 ## Configuration
 
@@ -24,6 +28,10 @@ Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/s
 | `APNS_BUNDLE_ID` | NozzleCast's bundle ID (relay derives the APNs topic by appending `.push-type.liveactivity`) |
 | `BAMBUDDY_URL` | Base URL of your Bambuddy instance |
 | `BAMBUDDY_API_KEY` | Bambuddy API key. **Recommend a dedicated, read-only key** (Bambuddy supports scoped keys independent of print-control/queue permissions) — the relay only ever reads printer status to enrich a Live Activity, it never needs to control anything |
+| `NTFY_TRIGGER_ENABLED` | Optional, defaults to `true`. Set to exactly `false` to disable the ntfy-based trigger (start/progress/end from Bambuddy's ntfy notifications) |
+| `BAMBUDDY_POLL_TRIGGER_ENABLED` | Optional, defaults to `false`. Set to exactly `true` to enable polling Bambuddy's own API directly for start/pause/resume/finish/failed/HMS-error detection instead — see the [poll-trigger design doc](docs/superpowers/specs/2026-09-03-bambuddy-poll-trigger-design.md) |
+| `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` (only relevant when polling is enabled) |
+| `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate (only relevant when polling is enabled) |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
 

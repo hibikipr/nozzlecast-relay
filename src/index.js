@@ -22,6 +22,8 @@ const { enrichmentFromStatus } = require('./bambuddyEnrichment');
 const { downscaleImage } = require('./imageDownscale');
 const { createServer } = require('./server');
 const { NtfyWatcher } = require('./ntfyWatcher');
+const { BambuddyPoller } = require('./bambuddyPoller');
+const { PAUSE } = require('./printerStateClassifier');
 
 async function main() {
   const config = loadConfig();
@@ -70,12 +72,14 @@ async function main() {
   // re-fetching); liveSnapshot is meant to look "live," so includeLiveSnapshot callers (progress/
   // end events) get a fresh fetch+mint every time rather than a cached one -- push-to-start omits
   // it entirely rather than spending a stream-token mint on an image that's discarded unused.
-  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false } = {}) => {
+  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false, prefetchedStatus = null } = {}) => {
     try {
       const bambuddyPrinterId = await printerIdCache.resolve(printerID);
       if (bambuddyPrinterId === null) return null;
 
-      const status = await bambuddyClient.status(bambuddyPrinterId);
+      // BambuddyPoller already fetches a fresh status every tick to detect transitions -- reuse
+      // that instead of a redundant second call when it's the one driving this enrichment.
+      const status = prefetchedStatus || await bambuddyClient.status(bambuddyPrinterId);
       const enrichment = enrichmentFromStatus(status);
 
       const cachedCoverImage = activityTokenStore.get(printerID)?.coverImage;
@@ -181,12 +185,14 @@ async function main() {
     }
 
     if (isProgressEvent(title) || isEndEvent(title)) {
-      await sendActivityUpdate({ title, printerID, name });
+      const event = isEndEvent(title) ? 'end' : 'update';
+      const stateLabel = event === 'end' ? endStateLabel(title) : 'Printing';
+      await sendActivityUpdate({ event, stateLabel, printerID, name, title });
     }
   };
 
-  const sendPushToStart = async ({ printerID, name }) => {
-    const enrichment = await fetchEnrichment(printerID, name);
+  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null }) => {
+    const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus });
     const payload = buildPushToStartPayload({
       printerID,
       printerName: name,
@@ -249,23 +255,28 @@ async function main() {
   // Every push must carry the activity's *entire* content-state, so this reuses the startedAt
   // tracked by activityTokenStore.startPrint() rather than "now" -- the print's real start time
   // doesn't change just because it's mid-print.
-  const sendActivityUpdate = async ({ title, printerID, name }) => {
+  //
+  // Trigger-source-agnostic: event/stateLabel are passed in already decided (by the ntfy title
+  // parser or by BambuddyPoller's state-transition classifier), not derived here. `title` is
+  // ntfy-only and optional -- it's used solely as a progress fallback when Bambuddy enrichment
+  // itself fails, since the poller path already gets its progress from Bambuddy directly and
+  // has no title-based percentage to fall back to anyway.
+  const sendActivityUpdate = async ({ event, stateLabel, printerID, name, title = null, prefetchedStatus = null }) => {
     const activity = activityTokenStore.get(printerID);
     if (!activity || !activity.token) {
-      console.log(`No activity token registered for printer "${name}", skipping ${isEndEvent(title) ? 'end' : 'update'} push`);
+      console.log(`No activity token registered for printer "${name}", skipping ${event} push`);
       return;
     }
 
-    const event = isEndEvent(title) ? 'end' : 'update';
-    const stateLabel = event === 'end' ? endStateLabel(title) : 'Printing';
     const startedAt = activity.startedAt ? new Date(activity.startedAt) : new Date();
 
     // Prefer Bambuddy's own progress (exact) over the ntfy title's regex-parsed percentage,
     // falling back to the latter only if enrichment failed entirely -- see fetchEnrichment.
     // includeLiveSnapshot: true because this IS an update/end event -- liveSnapshot is meant to
     // look "live," so it's fetched fresh here every time rather than reused from a cache.
-    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true });
-    const progress = event === 'end' ? 1 : (enrichment?.progress ?? progressFraction(title));
+    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus });
+    const fallbackProgress = title ? progressFraction(title) : null;
+    const progress = event === 'end' ? 1 : (enrichment?.progress ?? fallbackProgress ?? 0);
 
     const payload = buildActivityStatePayload({
       event,
@@ -297,24 +308,75 @@ async function main() {
     }
   };
 
-  const watcher = new NtfyWatcher({
-    server: config.ntfyServer,
-    topic: config.ntfyTopic,
-    authToken: config.ntfyAuthToken,
-    onMessage: onNtfyMessage,
-  });
-  watcher.start();
+  // Both trigger sources can be independently enabled/disabled (NTFY_TRIGGER_ENABLED,
+  // BAMBUDDY_POLL_TRIGGER_ENABLED) -- neither is deleted when the other is preferred, so
+  // switching back is just a config change, not a code change.
+  const watcher = config.ntfyTriggerEnabled
+    ? new NtfyWatcher({
+        server: config.ntfyServer,
+        topic: config.ntfyTopic,
+        authToken: config.ntfyAuthToken,
+        onMessage: onNtfyMessage,
+      })
+    : null;
+  if (watcher) {
+    watcher.start();
+    console.log(`ntfy trigger enabled, watching ${config.ntfyServer}/${config.ntfyTopic}`);
+  } else {
+    console.log('ntfy trigger disabled (NTFY_TRIGGER_ENABLED=false)');
+  }
+
+  // Polls Bambuddy's own API directly for start/pause/resume/finish/failed/HMS-error state
+  // transitions, plus a periodic correction push (fresh estimatedEndAt etc.) on a fixed interval
+  // rather than tying updates to Bambuddy's own ntfy percentage milestones -- see
+  // bambuddyPoller.js and printerStateClassifier.js for the transition/error-diffing logic.
+  const poller = config.bambuddyPollTriggerEnabled
+    ? new BambuddyPoller({
+        bambuddyClient,
+        intervalMs: config.bambuddyPollIntervalMs,
+        correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
+        onStart: async ({ printerID, name, status }) => {
+          await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
+          await sendPushToStart({ printerID, name, prefetchedStatus: status });
+        },
+        onPause: async ({ printerID, name, status }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status }),
+        onResume: async ({ printerID, name, status }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status }),
+        onFinish: async ({ printerID, name, status }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status }),
+        onFailed: async ({ printerID, name, status }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Failed', printerID, name, prefetchedStatus: status }),
+        onError: async ({ printerID, name, status }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Error', printerID, name, prefetchedStatus: status }),
+        onCorrection: async ({ printerID, name, status }) =>
+          sendActivityUpdate({
+            event: 'update',
+            stateLabel: status.state === PAUSE ? 'Paused' : 'Printing',
+            printerID,
+            name,
+            prefetchedStatus: status,
+          }),
+      })
+    : null;
+  if (poller) {
+    poller.start();
+    console.log(`Bambuddy poll trigger enabled, polling every ${config.bambuddyPollIntervalMs}ms`);
+  } else {
+    console.log('Bambuddy poll trigger disabled (BAMBUDDY_POLL_TRIGGER_ENABLED not "true")');
+  }
 
   const app = createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret });
   const port = process.env.PORT || 3000;
   const server = http.createServer(app);
   server.listen(port, () => {
-    console.log(`nozzlecast-relay listening on :${port}, watching ${config.ntfyServer}/${config.ntfyTopic}`);
+    console.log(`nozzlecast-relay listening on :${port}`);
   });
 
   const shutdown = () => {
     console.log('Shutting down...');
-    watcher.stop();
+    if (watcher) watcher.stop();
+    if (poller) poller.stop();
     server.close(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);

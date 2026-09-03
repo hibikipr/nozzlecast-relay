@@ -32,7 +32,36 @@ test('loadConfig returns normalized config when all vars present', () => {
   assert.equal(config.apnsTopic, 'com.victormanuel.NozzleCast.push-type.liveactivity');
   assert.equal(config.bambuddyUrl, 'https://bambuddy.townsville.cc');
   assert.equal(config.bambuddyApiKey, 'bb_test');
+  assert.equal(config.ntfyTriggerEnabled, true);
+  assert.equal(config.bambuddyPollTriggerEnabled, false);
+  assert.equal(config.bambuddyPollIntervalMs, 15000);
+  assert.equal(config.liveActivityCorrectionIntervalMs, 10 * 60 * 1000);
   assert.equal(config.dataDir, '/data');
+});
+
+test('loadConfig defaults NTFY_TRIGGER_ENABLED to true when unset (preserves pre-existing behavior)', () => {
+  const config = loadConfig(FULL_ENV);
+  assert.equal(config.ntfyTriggerEnabled, true);
+});
+
+test('loadConfig disables the ntfy trigger only on an explicit "false"', () => {
+  assert.equal(loadConfig({ ...FULL_ENV, NTFY_TRIGGER_ENABLED: 'false' }).ntfyTriggerEnabled, false);
+  assert.equal(loadConfig({ ...FULL_ENV, NTFY_TRIGGER_ENABLED: 'anything-else' }).ntfyTriggerEnabled, true);
+});
+
+test('loadConfig enables the Bambuddy poll trigger only on an explicit "true"', () => {
+  assert.equal(loadConfig({ ...FULL_ENV, BAMBUDDY_POLL_TRIGGER_ENABLED: 'true' }).bambuddyPollTriggerEnabled, true);
+  assert.equal(loadConfig({ ...FULL_ENV, BAMBUDDY_POLL_TRIGGER_ENABLED: 'yes' }).bambuddyPollTriggerEnabled, false);
+});
+
+test('loadConfig respects BAMBUDDY_POLL_INTERVAL_MS and LIVE_ACTIVITY_CORRECTION_INTERVAL_MS overrides', () => {
+  const config = loadConfig({
+    ...FULL_ENV,
+    BAMBUDDY_POLL_INTERVAL_MS: '5000',
+    LIVE_ACTIVITY_CORRECTION_INTERVAL_MS: '300000',
+  });
+  assert.equal(config.bambuddyPollIntervalMs, 5000);
+  assert.equal(config.liveActivityCorrectionIntervalMs, 300000);
 });
 
 test('loadConfig strips a trailing slash from NTFY_SERVER', () => {
