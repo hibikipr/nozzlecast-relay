@@ -18,7 +18,7 @@ const { ApnsAuthProvider } = require('./apnsAuth');
 const { ApnsClient } = require('./apnsClient');
 const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
-const { enrichmentFromStatus } = require('./bambuddyEnrichment');
+const { enrichmentFromStatus, isRemainingTimeTrustworthy } = require('./bambuddyEnrichment');
 const { downscaleImage } = require('./imageDownscale');
 const { createServer } = require('./server');
 const { NtfyWatcher } = require('./ntfyWatcher');
@@ -92,6 +92,23 @@ async function main() {
       // that instead of a redundant second call when it's the one driving this enrichment.
       const status = prefetchedStatus || await bambuddyClient.status(bambuddyPrinterId);
       enrichment = enrichmentFromStatus(status);
+
+      // Diagnostic only -- re-derives (doesn't change) whether estimatedEndAt came back null
+      // specifically because the sanity check rejected an implausible remaining_time, versus
+      // remaining_time simply being absent. Bambuddy's remaining_time has already been confirmed
+      // flaky (a bogus near-zero value at real, non-near-complete progress); this makes it
+      // possible to confirm from logs alone when that's the reason a countdown briefly
+      // disappears from a Live Activity, rather than reasoning about it after the fact with no
+      // record of what the raw value actually was.
+      if (
+        enrichment.estimatedEndAt === null
+        && typeof status.remaining_time === 'number'
+        && !isRemainingTimeTrustworthy(status.remaining_time, enrichment.progress)
+      ) {
+        console.log(
+          `Bambuddy enrichment: rejected implausible remaining_time=${status.remaining_time}s at progress=${enrichment.progress} for printer "${name}" -- omitting estimatedEndAt this update`,
+        );
+      }
     } catch (error) {
       console.error(`Bambuddy enrichment failed for printer "${name}", falling back to text-only content-state:`, error);
       return null;
