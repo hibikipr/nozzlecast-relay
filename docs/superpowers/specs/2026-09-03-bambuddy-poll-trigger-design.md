@@ -106,21 +106,39 @@ The poller already calls `bambuddyClient.status(id)` every tick to detect transi
 `prefetchedStatus`, so a poller-driven push reuses that same status object rather than a second,
 redundant fetch of the exact same data a moment later.
 
+## Resolved during real testing (2026-09-03)
+
+- **Push-to-start not rendering at all** turned out to be a *separate* bug, not this design's
+  `estimatedEndAt` issue below: `nozzleTempC`/`bedTempC` are Swift `Int?`, and this relay was
+  sending Bambuddy's raw fractional Doubles unrounded. One field failing to decode fails the
+  entire `content-state` struct, silently, with APNs still returning a clean 200 throughout
+  (Apple never validates a payload against the app's actual Swift types) — see the enrichment
+  design doc's own changelog for the fix (`Math.round()` in `enrichmentFromStatus`).
+- **`remaining_time` (and therefore `estimatedEndAt`) couldn't be trusted as-is** — confirmed
+  live: `remaining_time: 3` both right at print start and again at 62% progress on the same
+  job, clearly a placeholder/stale figure rather than a real estimate. Once the `Int?` bug above
+  was fixed and push-to-start actually rendered, this surfaced exactly as suspected: progress
+  showing 100% almost immediately with a still-ticking timer, since `PrintActivityWidget`'s
+  `LiveProgressText` interpolates `elapsed / (estimatedEndAt - startedAt)` locally every second,
+  and that fraction clamps to 1.0 almost instantly when the denominator is ~3 seconds. **Fixed**
+  in `enrichmentFromStatus`/`isRemainingTimeTrustworthy`: `remaining_time` under 30 seconds is
+  only trusted when progress is also ≥ 95% (a near-zero remaining time is only plausible near
+  completion) — otherwise `estimatedEndAt` comes back `null` and the widget falls back to its
+  non-interpolated `progress`-only display.
+- **Manual stop labeled "Failed" instead of "Cancelled"** (matching Bambu Handy's own wording)
+  — dug past the initial "probably opaque" read: Bambuddy's `PrintLogEntry.status` schema *does*
+  support a `"cancelled"` value, but per `PrintLogEntryUpdate`'s own description that value is
+  only ever set by a human manually reclassifying a row after the fact through a "Failure
+  Analysis" editor (#1687) — Bambuddy's automatic classification at capture time only ever
+  writes `"failed"`/`"completed"` for an active-print stop, confirmed against two real print-log
+  entries from tonight's tests (`failure_reason: null` on both). So the distinction Bambu Handy
+  shows almost certainly comes from a `print_error`/task-end reason code on the printer's own
+  MQTT stream directly — real information Bambu Lab's firmware has, but which Bambuddy's own API
+  layer (the only thing this relay can see) doesn't expose anywhere, in `/status` or
+  automatically in `/print-log`. Not fixable from the relay side without a different data source.
+
 ## Not yet done / open items
 
-- **`remaining_time` (and therefore `estimatedEndAt`) can't be trusted as-is.** Confirmed live on
-  2026-09-03's first real poll-triggered test: Bambuddy reported `remaining_time: 3` both right
-  at print start (`PREPARE -> RUNNING`) and again at 62% progress while paused — clearly a
-  placeholder/stale value, not a real estimate, in at least these two situations. The Live
-  Activity didn't appear on-device for that test at all (APNs itself returned a clean 200 for
-  both push-to-start sends — confirmed by re-sending the actual reconstructed payload
-  diagnostically — so this wasn't a rejected/dropped push). Suspected but not yet confirmed: an
-  `estimatedEndAt` only ~3 seconds after `startedAt` producing a degenerate/already-elapsed
-  timer range if the app uses `Text(timerInterval:)`/`ProgressView(timerInterval:)` for the
-  native countdown this whole design is meant to support, which may fail to render entirely
-  rather than just displaying a wrong number. Needs either: don't pass through an implausible
-  `remaining_time` (e.g. suspiciously small relative to progress) as `estimatedEndAt` at all, or
-  confirmation from the app side that a degenerate timer range isn't actually the problem.
 - The exact HMS error → user-visible severity mapping is unrefined — every new code fires an
   update today regardless of severity; may need tuning once real HMS traffic is observed
   (Bambuddy's own status carries a `severity` field per entry that isn't used yet).

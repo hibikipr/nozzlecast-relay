@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { enrichmentFromStatus } = require('../src/bambuddyEnrichment');
+const { enrichmentFromStatus, isRemainingTimeTrustworthy } = require('../src/bambuddyEnrichment');
 
 test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real snake_case keys', () => {
   const now = new Date('2026-09-03T12:00:00.000Z');
@@ -99,4 +99,40 @@ test('enrichmentFromStatus defaults now to the current time', () => {
 
   assert.ok(enrichment.estimatedEndAt.getTime() >= before + 60 * 1000);
   assert.ok(enrichment.estimatedEndAt.getTime() <= after + 60 * 1000);
+});
+
+test('isRemainingTimeTrustworthy trusts any value at or above the 30s floor, regardless of progress', () => {
+  assert.equal(isRemainingTimeTrustworthy(30, 0), true);
+  assert.equal(isRemainingTimeTrustworthy(600, 0.1), true);
+});
+
+test('isRemainingTimeTrustworthy only trusts a near-zero value when progress is also near completion', () => {
+  assert.equal(isRemainingTimeTrustworthy(3, 0), false);
+  assert.equal(isRemainingTimeTrustworthy(3, 0.62), false); // the exact real case observed live
+  assert.equal(isRemainingTimeTrustworthy(3, 0.95), true);
+  assert.equal(isRemainingTimeTrustworthy(3, 1), true);
+});
+
+test('isRemainingTimeTrustworthy treats a missing/non-numeric progress as not near completion', () => {
+  assert.equal(isRemainingTimeTrustworthy(3, null), false);
+  assert.equal(isRemainingTimeTrustworthy(3, undefined), false);
+});
+
+test('enrichmentFromStatus omits estimatedEndAt when remaining_time is implausible for the current progress', () => {
+  // The exact real case observed live: remaining_time: 3 both right at print start (progress 0)
+  // and again at 62% progress on the same job -- a placeholder/stale figure, not a real estimate.
+  assert.equal(enrichmentFromStatus({ progress: 0, remaining_time: 3 }).estimatedEndAt, null);
+  assert.equal(enrichmentFromStatus({ progress: 62, remaining_time: 3 }).estimatedEndAt, null);
+});
+
+test('enrichmentFromStatus keeps a near-zero remaining_time when progress is genuinely near completion', () => {
+  const now = new Date('2026-09-03T12:00:00.000Z');
+  const enrichment = enrichmentFromStatus({ progress: 99, remaining_time: 3 }, { now });
+  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 3000);
+});
+
+test('enrichmentFromStatus still trusts a plausible remaining_time at low progress', () => {
+  const now = new Date('2026-09-03T12:00:00.000Z');
+  const enrichment = enrichmentFromStatus({ progress: 5, remaining_time: 900 }, { now });
+  assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 900 * 1000);
 });

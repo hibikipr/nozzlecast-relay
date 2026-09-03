@@ -6,7 +6,21 @@
 before building their payload, falling back to the old text-only fields (progress from the ntfy
 title, everything else `null`) on any Bambuddy error. `progress`/`estimatedEndAt` prefer
 Bambuddy's numbers over the ntfy-title-parsed fallback as specified. Step 6 (`coverImage`/
-`liveSnapshot`) remains a deliberate follow-up, not started.
+`liveSnapshot`) shipped as its own follow-up spec/implementation
+(`2026-09-03-live-activity-images-design.md`).
+
+**Post-implementation fix (2026-09-03), found via a real live test:** `nozzleTempC`/`bedTempC`
+are declared `Int?` on the Swift side (`PrintActivityAttributes.ContentState`), but
+`enrichmentFromStatus` was passing Bambuddy's raw fractional Doubles straight through (e.g.
+`74.59375`). `JSONDecoder`'s default `Int` decoding does not truncate a fractional JSON number —
+it throws a type-mismatch error — and since ActivityKit decodes the entire `content-state` as one
+struct, that one field failing silently failed the *whole* push-to-start on-device, while APNs
+itself kept returning a clean 200 throughout (Apple never validates a payload against the app's
+actual Swift types, only that it's well-formed JSON). This is very likely why push-to-start
+looked broken from the very first real end-to-end test of this enrichment pass, not anything
+specific to the Bambuddy-poll trigger it was tested alongside. Fixed with `Math.round()` on both
+fields rather than widening the Swift type, matching the app's existing Int-everywhere convention
+for displayed temps.
 
 ## Problem
 

@@ -8,6 +8,24 @@
 // ntfy event fires, Bambuddy's live status may already read "idle" or similar, which would race
 // with detecting the *event* itself. Bambuddy's API is the source for telemetry; ntfy stays the
 // source for event timing.
+// Bambuddy's remaining_time has been observed live to report an implausible near-zero value
+// (3 seconds) both right at print start AND again at 62% progress on the same printer/job --
+// clearly a placeholder/stale figure in at least those situations, not a real estimate. A
+// genuinely near-zero remaining time is only plausible when the print is nearly done, so it's
+// only trusted past MIN_TRUSTED_REMAINING_TIME_SECONDS unless progress also clears
+// NEAR_COMPLETION_PROGRESS. Untrusted means estimatedEndAt comes back null rather than a
+// degenerate value -- this feeds a native SwiftUI countdown timer on the app side
+// (Text(timerInterval:)-style), where a real-but-tiny range doesn't crash anything but produces
+// a broken-looking "stuck at 100%, timer still ticking" display, confirmed against a real
+// push-to-start once the separate Int-decode bug that was blocking rendering entirely got fixed.
+const MIN_TRUSTED_REMAINING_TIME_SECONDS = 30;
+const NEAR_COMPLETION_PROGRESS = 0.95;
+
+function isRemainingTimeTrustworthy(remainingTimeSeconds, progressFraction) {
+  if (remainingTimeSeconds >= MIN_TRUSTED_REMAINING_TIME_SECONDS) return true;
+  return typeof progressFraction === 'number' && progressFraction >= NEAR_COMPLETION_PROGRESS;
+}
+
 function enrichmentFromStatus(status, { now = new Date() } = {}) {
   // Bambuddy's actual /status response uses snake_case (subtask_name, layer_num, total_layers,
   // remaining_time) -- confirmed against a real deploy, not the camelCase the original design
@@ -17,7 +35,11 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
   // those were unaffected -- but subtaskName/layerNum/totalLayers/remainingTime were silently
   // always undefined against the real API, exactly as null as if Bambuddy had never returned
   // them at all.
-  const remainingTimeSeconds = typeof status.remaining_time === 'number' ? status.remaining_time : null;
+  const progressFraction = typeof status.progress === 'number' ? status.progress / 100 : null;
+  const rawRemainingTimeSeconds = typeof status.remaining_time === 'number' ? status.remaining_time : null;
+  const remainingTimeSeconds = rawRemainingTimeSeconds !== null && isRemainingTimeTrustworthy(rawRemainingTimeSeconds, progressFraction)
+    ? rawRemainingTimeSeconds
+    : null;
   // PrintActivityAttributes.ContentState declares nozzleTempC/bedTempC as Swift Int?, matching
   // the app's existing Int-everywhere convention for displayed temps -- confirmed as a real bug
   // against a live deploy: Bambuddy's raw temperatures.{nozzle,bed} are fractional Doubles (e.g.
@@ -28,7 +50,7 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
   // app's actual Swift types, only that it's well-formed JSON.
   const roundedOrNull = (value) => (typeof value === 'number' ? Math.round(value) : null);
   return {
-    progress: typeof status.progress === 'number' ? status.progress / 100 : null,
+    progress: progressFraction,
     jobName: status.subtask_name ?? null,
     currentLayer: typeof status.layer_num === 'number' ? status.layer_num : null,
     totalLayers: typeof status.total_layers === 'number' ? status.total_layers : null,
@@ -38,4 +60,4 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
   };
 }
 
-module.exports = { enrichmentFromStatus };
+module.exports = { enrichmentFromStatus, isRemainingTimeTrustworthy };
