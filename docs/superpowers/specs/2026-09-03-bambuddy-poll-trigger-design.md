@@ -201,6 +201,27 @@ HMS-free failure no longer shows the alarming "Failed" label it used to. The bad
 "a badge means nothing once the print has ended" rule — only the stateLabel decision reads
 `priorIssueSeverity`.
 
+## Correction interval lowered to 1 minute (2026-09-03)
+
+`LIVE_ACTIVITY_CORRECTION_INTERVAL_MS=60000` in this deploy's `.env` (was the 10-minute default).
+Victor's print jobs run ~9 minutes, so the 10-minute correction never fired at all — the only
+progress% update he ever saw was whatever real state-change event happened to land (one print
+jumped 1% → 63% at a pause, since that was the first content push since start). Also fixed a
+related gap while making this change: `docker-compose.yml`'s `environment:` block never actually
+passed `BAMBUDDY_POLL_INTERVAL_MS`/`LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` through to the
+container at all (both are optional in `config.js` with in-code defaults, but Compose only
+forwards vars explicitly listed in `environment:`) — setting either in `.env` alone would have
+been silently ignored before this.
+
+Flagged separately (app-side, not a relay change): the percentage figure specifically may have
+looked "frozen" for a more precise reason than just "corrections are rare" — `LiveProgressText`'s
+`TimelineView(.periodic(...))` isn't one of the primitives Apple's Live Activity rendering
+guarantees continuous system-driven refresh for (unlike `Text(.timer)` or
+`ProgressView(timerInterval:)`, which is why the countdown clock and progress *bar* kept moving
+smoothly on their own). A 1-minute correction masks this by making the jumps small/frequent
+enough to look smooth, but doesn't fix the underlying cause — being tracked separately on the app
+side (replacing the bespoke `TimelineView` with something Apple treats as genuinely continuous).
+
 ## Not yet done / open items
 
 - Running both triggers simultaneously isn't guarded against (see toggles table above) — fine for
