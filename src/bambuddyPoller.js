@@ -41,7 +41,7 @@ class BambuddyPoller {
     this.now = now;
     this.hmsIssueDebouncer = hmsIssueDebouncer;
     this.timer = null;
-    this.knownPrinters = new Map(); // printerID -> { state, lastCorrectionAt }
+    this.knownPrinters = new Map(); // printerID -> { state, lastCorrectionAt, progress }
   }
 
   start() {
@@ -76,11 +76,12 @@ class BambuddyPoller {
       console.error(`Bambuddy poller: status fetch failed for printer "${printer.name}", skipping this tick:`, error);
       return;
     }
+    const progress = typeof status.progress === 'number' ? status.progress / 100 : null;
 
     const previous = this.knownPrinters.get(printerID);
 
     if (!previous) {
-      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: null });
+      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: null, progress });
       return;
     }
 
@@ -99,6 +100,14 @@ class BambuddyPoller {
     // only escalates to "error" when a real HMS code is attached.
     const priorIssueSeverity = badgeFromEntries(this.hmsIssueDebouncer.getConfirmed(printerID)).issueSeverity;
 
+    // Also read BEFORE this tick's own data is stored: Bambuddy resets progress (and layer_num)
+    // to 0 the moment state becomes FAILED -- confirmed live, a print paused at 63% read
+    // progress: 0 on the very same poll its state flipped to FAILED. onFinish/onFailed use this
+    // instead of the current (already-reset) status.progress, same reasoning as
+    // priorIssueSeverity: data captured at the instant of an end transition can't be trusted to
+    // describe what was actually true up to that point.
+    const priorProgress = previous.progress;
+
     if (transition === 'start') {
       // A fresh start means a fresh activity -- whatever was tracked belonged to the previous
       // job (see HmsIssueDebouncer.reset()'s own reasoning). Observe this tick's own entries
@@ -107,11 +116,11 @@ class BambuddyPoller {
     }
     const confirmedIssues = isActive ? this.hmsIssueDebouncer.observe(printerID, status.hms_errors || []) : [];
     const badge = badgeFromEntries(confirmedIssues);
-    const ctx = { printerID, name: printer.name, status, priorIssueSeverity, ...badge };
+    const ctx = { printerID, name: printer.name, status, priorIssueSeverity, priorProgress, ...badge };
 
     if (transition === 'start') {
       await this.onStart(ctx);
-      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: this.now() });
+      this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt: this.now(), progress });
       return;
     }
     if (transition === 'pause') await this.onPause(ctx);
@@ -125,7 +134,7 @@ class BambuddyPoller {
       lastCorrectionAt = this.now();
     }
 
-    this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt });
+    this.knownPrinters.set(printerID, { state: status.state, lastCorrectionAt, progress });
   }
 }
 

@@ -217,6 +217,20 @@ reads ~100% from real data anyway, so the hardcode was never actually doing anyt
 been stopped at 60%. Now uses the same real progress source as update events
 (`enrichment?.progress ?? fallbackProgress ?? 0`) for "end" too, no special-casing.
 
+**Follow-up correction, found immediately on the first real test of the above (2026-09-03):**
+removing the hardcode traded one wrong number for another. Confirmed live: Bambuddy resets
+`progress` (and `layer_num`, same as observed once before) to `0` the instant `state` becomes
+`FAILED` — a print paused at 63% read `progress: 0` on the very same poll its state flipped to
+`FAILED`. Re-querying Bambuddy at the moment of the end transition itself is exactly the wrong
+place to read progress from, same underlying problem `priorIssueSeverity` was built to solve for
+the stateLabel decision. Fix: `BambuddyPoller` now also tracks each printer's last-observed
+`progress` (alongside `state`) and exposes it as `ctx.priorProgress` — the value from the tick
+*before* the transition, not the (already-reset) current one. `sendActivityUpdate` prefers
+`priorProgress` over a fresh enrichment fetch specifically for `"end"` events (a fresh fetch is
+still used for `"update"` events, where no such reset applies). `onFinish` gets this too, on the
+assumption a moment-before snapshot is never worse than a potentially-just-reset current one,
+even though FINISH hasn't been directly confirmed to exhibit the same reset.
+
 ## Correction interval lowered to 1 minute (2026-09-03)
 
 `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS=60000` in this deploy's `.env` (was the 10-minute default).

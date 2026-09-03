@@ -115,6 +115,48 @@ test('priorIssueSeverity on a failed ctx reflects whatever qualifying issue was 
   assert.equal(cb.calls.failed[0].issueCount, null);
 });
 
+test('priorProgress on a failed ctx reflects the tick before the failure, not Bambuddy\'s own reset-to-0 value', async () => {
+  // Confirmed live: Bambuddy resets progress (and layer_num) to 0 the instant state becomes
+  // FAILED. A print paused at 63% read progress: 0 on the very same poll its state flipped to
+  // FAILED -- so the failed ctx must not just use status.progress at face value.
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', progress: 63, hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline: progress 0.63
+
+  client.status = async () => ({ state: 'FAILED', progress: 0, hms_errors: [] }); // Bambuddy's own reset
+  await poller.tick();
+
+  assert.equal(cb.calls.failed[0].priorProgress, 0.63);
+});
+
+test('priorProgress on a finish ctx reflects the tick before the transition', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', progress: 99, hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline: progress 0.99
+
+  client.status = async () => ({ state: 'FINISH', progress: 100, hms_errors: [] });
+  await poller.tick();
+
+  assert.equal(cb.calls.finish[0].priorProgress, 0.99);
+});
+
+test('priorProgress is null when nothing was ever observed before (e.g. the printer\'s baseline tick had no numeric progress)', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline: no progress field at all -> null
+
+  client.status = async () => ({ state: 'FAILED', hms_errors: [] });
+  await poller.tick();
+
+  assert.equal(cb.calls.failed[0].priorProgress, null);
+});
+
 test('issueSeverity/issueCount are null/null on ctx until an HMS entry clears the debounce threshold', async () => {
   const client = fakeClient({
     printers: [{ id: 1, name: 'Sam P1S' }],

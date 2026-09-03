@@ -287,7 +287,8 @@ async function main() {
   // itself fails, since the poller path already gets its progress from Bambuddy directly and
   // has no title-based percentage to fall back to anyway.
   const sendActivityUpdate = async ({
-    event, stateLabel, printerID, name, title = null, prefetchedStatus = null, issueSeverity = null, issueCount = null,
+    event, stateLabel, printerID, name, title = null, prefetchedStatus = null, priorProgress = null,
+    issueSeverity = null, issueCount = null,
   }) => {
     const activity = activityTokenStore.get(printerID);
     if (!activity || !activity.token) {
@@ -306,7 +307,15 @@ async function main() {
     // No longer hardcoded to 1 for "end" -- a genuine finish naturally reads ~100% from real
     // data anyway, but a stopped/cancelled print did NOT necessarily reach 100%, and claiming it
     // did is just factually wrong (a print stopped at 60% showing "100%" on its way out).
-    const progress = enrichment?.progress ?? fallbackProgress ?? 0;
+    //
+    // priorProgress (the poller's own last-observed value, from the tick BEFORE this transition)
+    // takes priority over a fresh enrichment fetch for "end" specifically: confirmed live that
+    // Bambuddy resets progress to 0 the instant state becomes FAILED, so re-querying at the
+    // moment of the end event itself would silently reintroduce a different wrong number (0%
+    // instead of the old hardcoded 100%) for the exact same reason the hardcode was wrong.
+    const progress = event === 'end'
+      ? (priorProgress ?? enrichment?.progress ?? fallbackProgress ?? 0)
+      : (enrichment?.progress ?? fallbackProgress ?? 0);
 
     const payload = buildActivityStatePayload({
       event,
@@ -380,8 +389,8 @@ async function main() {
           sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
         onResume: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
-        onFinish: async ({ printerID, name, status, issueSeverity, issueCount }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        onFinish: async ({ printerID, name, status, priorProgress, issueSeverity, issueCount }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, priorProgress, issueSeverity, issueCount }),
         // Bambuddy's own frontend (PrintersPage.tsx's classifyPrinterStatus) treats a bare
         // FAILED gcode_state with no HMS error attached as equivalent to FINISH for GROUPING
         // purposes (badge/dot color) -- including user-cancellations, which report as FAILED
@@ -393,13 +402,14 @@ async function main() {
         // succeeded -- for the common case (no real issue attached, i.e. a plain user stop or an
         // HMS-free failure); "Failed" is kept for when priorIssueSeverity shows a real qualifying
         // issue actually was confirmed active going into this transition.
-        onFailed: async ({ printerID, name, status, priorIssueSeverity, issueSeverity, issueCount }) =>
+        onFailed: async ({ printerID, name, status, priorIssueSeverity, priorProgress, issueSeverity, issueCount }) =>
           sendActivityUpdate({
             event: 'end',
             stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Stopped',
             printerID,
             name,
             prefetchedStatus: status,
+            priorProgress,
             issueSeverity,
             issueCount,
           }),
