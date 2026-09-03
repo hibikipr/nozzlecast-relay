@@ -498,6 +498,13 @@ script forgot the wake push entirely — confirmed live: push-to-start rendered 
 subsequent update was skipped for the whole run, because nothing ever nudged the app into
 observing the new activity and calling `/register-activity`.
 
+**Running a replay alongside a real active print stacks the two Live Activities** — iOS groups
+multiple simultaneous Live Activities into one collapsed stack on the Lock Screen/Dynamic Island
+rather than showing them full-size side by side. Confirmed live: a replay run alongside a real
+H2C print landed in the same stack, and only the top card was visible without expanding it.
+Long-press (or swipe) the stack to cycle through and see the test activity on its own, or run a
+replay when no real print is active for an unobstructed view.
+
 Two runs
 ship today: `sam-p1s-finish` (full happy-path RUNNING → FINISH climb to completion) and
 `sam-p1s-paused-stopped` (RUNNING → PAUSE → FAILED-with-no-HMS-issue, exercising the "Paused" and
