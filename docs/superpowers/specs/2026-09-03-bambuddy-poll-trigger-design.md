@@ -46,19 +46,23 @@ This also means transitions are inherently deduped by construction (a callback o
 the state actually changes) — no separate dedupe window needed, unlike the ntfy path's
 title-based `StartEventDedupe`.
 
-### State values: RUNNING/FINISH/FAILED confirmed, PAUSE is not (yet)
+### State values: all four confirmed live
 
 Bambuddy's OpenAPI schema types `state` as a bare string with no enum — it's passed straight
-through from the underlying Bambu Lab MQTT `gcode_state`. `RUNNING`, `FINISH`, and `FAILED` are
-directly confirmed: Bambuddy's own endpoint descriptions reference them verbatim ("RUNNING state
-only — paused time excluded", "acknowledge... after a finished/failed print... FINISH/FAILED
-state"), and a real live status response showed `state: "FINISH"` after a completed print.
-`PAUSE` is the well-documented value from the wider Bambu Lab community's reverse-engineered
-protocol, but this relay's API key is deliberately read-only (per the enrichment design's own
-recommendation), so a real pause couldn't be triggered to confirm it directly before shipping
-this. `printerStateClassifier.js` logs every observed raw transition, specifically so a wrong
-guess here surfaces immediately and is a one-line fix the first time a real pause happens, not a
-silent miss.
+through from the underlying Bambu Lab MQTT `gcode_state`. `RUNNING`, `FINISH`, and `FAILED` were
+confirmed pre-launch: Bambuddy's own endpoint descriptions reference them verbatim ("RUNNING
+state only — paused time excluded", "acknowledge... after a finished/failed print... FINISH/
+FAILED state"), and a real live status response showed `state: "FINISH"` after a completed
+print. `PAUSE` was the one value this relay's (deliberately read-only) API key couldn't be used
+to confirm before shipping — **confirmed 2026-09-03 against a real supervised pause**, exactly as
+guessed:
+
+```
+Bambuddy poller: printer "Sam P1S" state RUNNING -> PAUSE (pause)
+```
+
+`printerStateClassifier.js` logs every observed raw transition specifically so a case like this
+surfaces immediately rather than silently misfiring — it did here, and the guess was right.
 
 ### Transition -> event mapping
 
@@ -104,10 +108,19 @@ redundant fetch of the exact same data a moment later.
 
 ## Not yet done / open items
 
-- **Live-verify the `PAUSE` state string and general error/pause behavior against a real,
-  supervised pause of an actual print** — the one thing this design couldn't self-verify given
-  the relay's intentionally read-only Bambuddy key. Watch `docker logs` for the
-  `Bambuddy poller: printer "..." state X -> Y (...)` line on the next real pause.
+- **`remaining_time` (and therefore `estimatedEndAt`) can't be trusted as-is.** Confirmed live on
+  2026-09-03's first real poll-triggered test: Bambuddy reported `remaining_time: 3` both right
+  at print start (`PREPARE -> RUNNING`) and again at 62% progress while paused — clearly a
+  placeholder/stale value, not a real estimate, in at least these two situations. The Live
+  Activity didn't appear on-device for that test at all (APNs itself returned a clean 200 for
+  both push-to-start sends — confirmed by re-sending the actual reconstructed payload
+  diagnostically — so this wasn't a rejected/dropped push). Suspected but not yet confirmed: an
+  `estimatedEndAt` only ~3 seconds after `startedAt` producing a degenerate/already-elapsed
+  timer range if the app uses `Text(timerInterval:)`/`ProgressView(timerInterval:)` for the
+  native countdown this whole design is meant to support, which may fail to render entirely
+  rather than just displaying a wrong number. Needs either: don't pass through an implausible
+  `remaining_time` (e.g. suspiciously small relative to progress) as `estimatedEndAt` at all, or
+  confirmation from the app side that a degenerate timer range isn't actually the problem.
 - The exact HMS error → user-visible severity mapping is unrefined — every new code fires an
   update today regardless of severity; may need tuning once real HMS traffic is observed
   (Bambuddy's own status carries a `severity` field per entry that isn't used yet).
