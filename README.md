@@ -10,11 +10,14 @@ cannot do (`Activity.request()` only succeeds while the app is foreground; see N
 activity's whole lifetime, pushed directly to that activity's own per-activity APNs token — not
 just the initial start.
 
-Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md),
-plus follow-ups for [Bambuddy API enrichment](docs/superpowers/specs/2026-09-03-bambuddy-enrichment-design.md),
-[Live Activity images](docs/superpowers/specs/2026-09-03-live-activity-images-design.md), and the
-[Bambuddy-poll trigger](docs/superpowers/specs/2026-09-03-bambuddy-poll-trigger-design.md) (an
-alternative to ntfy for start/pause/error/stop/finish detection).
+Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) — consolidated, current-state design reference
+(modules, data flow, payload shapes, configuration, known limitations). The point-in-time design
+docs it's consolidated from remain under `docs/superpowers/specs/` as the full investigation
+history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md),
+[Bambuddy API enrichment](docs/superpowers/specs/2026-09-03-bambuddy-enrichment-design.md),
+[Live Activity images](docs/superpowers/specs/2026-09-03-live-activity-images-design.md),
+[HMS severity badge](docs/superpowers/specs/2026-09-03-hms-severity-badge-design.md), and the
+[Bambuddy-poll trigger](docs/superpowers/specs/2026-09-03-bambuddy-poll-trigger-design.md).
 
 ## Configuration
 
