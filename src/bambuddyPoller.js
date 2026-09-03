@@ -91,6 +91,14 @@ class BambuddyPoller {
 
     const isActive = status.state === RUNNING || status.state === PAUSE;
 
+    // Read BEFORE any reset/re-observe this tick: "what was confirmed as of the moment just
+    // before this transition" -- specifically for onFailed to tell a real HMS-backed failure
+    // apart from a bare FAILED with nothing attached (a plain user stop, or a failure that
+    // never actually raised a qualifying issue). Bambuddy's own frontend (PrintersPage.tsx's
+    // classifyPrinterStatus) treats a bare FAILED with no HMS error as equivalent to FINISH --
+    // only escalates to "error" when a real HMS code is attached.
+    const priorIssueSeverity = badgeFromEntries(this.hmsIssueDebouncer.getConfirmed(printerID)).issueSeverity;
+
     if (transition === 'start') {
       // A fresh start means a fresh activity -- whatever was tracked belonged to the previous
       // job (see HmsIssueDebouncer.reset()'s own reasoning). Observe this tick's own entries
@@ -99,7 +107,7 @@ class BambuddyPoller {
     }
     const confirmedIssues = isActive ? this.hmsIssueDebouncer.observe(printerID, status.hms_errors || []) : [];
     const badge = badgeFromEntries(confirmedIssues);
-    const ctx = { printerID, name: printer.name, status, ...badge };
+    const ctx = { printerID, name: printer.name, status, priorIssueSeverity, ...badge };
 
     if (transition === 'start') {
       await this.onStart(ctx);

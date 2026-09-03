@@ -83,6 +83,38 @@ test('transitions to FINISH/FAILED fire onFinish/onFailed', async () => {
   assert.equal(cb.calls.failed.length, 0);
 });
 
+test('priorIssueSeverity on a failed ctx is null when no qualifying issue was confirmed beforehand', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline
+  client.status = async () => ({ state: 'FAILED', hms_errors: [] });
+  await poller.tick(); // a plain stop/failure, nothing was ever confirmed
+
+  assert.equal(cb.calls.failed[0].priorIssueSeverity, null);
+});
+
+test('priorIssueSeverity on a failed ctx reflects whatever qualifying issue was confirmed just before the failure', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [{ code: 'A', severity: 1 }] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline
+  await poller.tick(); // observe 1
+  await poller.tick(); // observe 2 -- confirmed (severity 1 -> "error")
+
+  client.status = async () => ({ state: 'FAILED', hms_errors: [] }); // Bambuddy may report it gone by the failed tick itself
+  await poller.tick();
+
+  assert.equal(cb.calls.failed[0].priorIssueSeverity, 'error');
+  // The failed ctx's OWN issueSeverity/issueCount stay null regardless -- a badge means
+  // nothing once the print has ended; only the stateLabel decision (made by the caller) uses
+  // priorIssueSeverity.
+  assert.equal(cb.calls.failed[0].issueSeverity, null);
+  assert.equal(cb.calls.failed[0].issueCount, null);
+});
+
 test('issueSeverity/issueCount are null/null on ctx until an HMS entry clears the debounce threshold', async () => {
   const client = fakeClient({
     printers: [{ id: 1, name: 'Sam P1S' }],

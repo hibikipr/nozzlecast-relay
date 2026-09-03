@@ -59,6 +59,19 @@ class HmsIssueDebouncer {
   reset(printerID) {
     this.trackedByPrinter.delete(printerID);
   }
+
+  // Reads the currently-confirmed entries WITHOUT observing new data or mutating any streak --
+  // for a caller that needs "what was confirmed as of the last observe() call" without also
+  // being the one driving this tick's observation (e.g. deciding a FAILED transition's
+  // stateLabel from whatever was confirmed the moment before, since observe() itself only runs
+  // while the printer is still active and a FAILED tick's own hms_errors may already differ).
+  getConfirmed(printerID) {
+    const tracked = this.trackedByPrinter.get(printerID);
+    if (!tracked) return [];
+    return Array.from(tracked.values())
+      .filter((state) => state.confirmed)
+      .map((state) => state.entry);
+  }
 }
 
 module.exports = { HmsIssueDebouncer };

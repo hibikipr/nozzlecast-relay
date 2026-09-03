@@ -77,3 +77,25 @@ test('defaults to a threshold of 2 when not specified', () => {
   const result = debouncer.observe('samp1s', [{ code: 'A', severity: 1 }]);
   assert.deepEqual(result, []);
 });
+
+test('getConfirmed() reads the current confirmed set without mutating any streak', () => {
+  const debouncer = new HmsIssueDebouncer({ threshold: 2 });
+  debouncer.observe('samp1s', [{ code: 'A', severity: 1 }]);
+  debouncer.observe('samp1s', [{ code: 'A', severity: 1 }]); // confirmed
+
+  const first = debouncer.getConfirmed('samp1s');
+  const second = debouncer.getConfirmed('samp1s');
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1, 'reading twice should not change anything');
+});
+
+test('getConfirmed() returns an empty list for an unknown printer', () => {
+  const debouncer = new HmsIssueDebouncer();
+  assert.deepEqual(debouncer.getConfirmed('unknown'), []);
+});
+
+test('getConfirmed() excludes not-yet-confirmed entries', () => {
+  const debouncer = new HmsIssueDebouncer({ threshold: 2 });
+  debouncer.observe('samp1s', [{ code: 'A', severity: 1 }]); // only 1 observation
+  assert.deepEqual(debouncer.getConfirmed('samp1s'), []);
+});

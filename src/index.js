@@ -356,8 +356,24 @@ async function main() {
           sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
         onFinish: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
-        onFailed: async ({ printerID, name, status, issueSeverity, issueCount }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Failed', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
+        // Bambuddy's own frontend (PrintersPage.tsx's classifyPrinterStatus) treats a bare
+        // FAILED gcode_state with no HMS error attached as equivalent to FINISH -- including
+        // user-cancellations, which report as FAILED with nothing else distinguishing them from
+        // a genuine fault (see the design doc's cancel-vs-failed investigation). Only escalate
+        // to "Failed" when priorIssueSeverity shows a real qualifying (severity<=3) issue was
+        // actually confirmed active going into this transition; otherwise it's "Complete," same
+        // as a normal finish -- "Failed" is alarming and implies a real problem, which a plain
+        // user stop or an HMS-free failure isn't.
+        onFailed: async ({ printerID, name, status, priorIssueSeverity, issueSeverity, issueCount }) =>
+          sendActivityUpdate({
+            event: 'end',
+            stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Complete',
+            printerID,
+            name,
+            prefetchedStatus: status,
+            issueSeverity,
+            issueCount,
+          }),
         onCorrection: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({
             event: 'update',

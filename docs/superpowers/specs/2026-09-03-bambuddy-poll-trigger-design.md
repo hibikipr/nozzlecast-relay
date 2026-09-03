@@ -182,6 +182,25 @@ separately confirmed correct against this same real testing session.
   that print's *last successfully delivered* push (its initial push-to-start content, in that
   case) — not the relay failing to recognize the print had ended.
 
+## onFailed's stateLabel: "Failed" only when a real HMS issue backs it up (2026-09-03)
+
+Resolves the cancel-vs-failed question above more directly than "genuinely opaque" turned out to
+be the last word: confirmed straight from Bambuddy's own frontend (`PrintersPage.tsx`'s
+`classifyPrinterStatus`) that Bambuddy itself treats a bare `FAILED` gcode_state with no HMS error
+attached as equivalent to `FINISH` — its own comment: *"FAILED without an active HMS error is the
+printer's terminal state after any unsuccessful end — including user-cancellations... only
+escalate to error when an HMS code is attached."* So `onFailed` now checks
+`HmsIssueDebouncer.getConfirmed()` (added alongside `observe()`/`reset()` — reads the currently
+confirmed set without observing new data or mutating any streak) for whatever qualifying
+(severity ≤ 3) issue was confirmed *just before* the failure, exposed on `ctx.priorIssueSeverity`
+(computed before that tick's own reset/re-observe, since a `FAILED` tick isn't active and so
+never re-observes `hms_errors` itself). `stateLabel` is `"Failed"` only when `priorIssueSeverity`
+is non-null; otherwise it's `"Complete"`, the same as a normal finish — a plain user stop or an
+HMS-free failure no longer shows the alarming "Failed" label it used to. The badge itself
+(`issueSeverity`/`issueCount` on the failed push) stays `null`/`null` regardless, per the existing
+"a badge means nothing once the print has ended" rule — only the stateLabel decision reads
+`priorIssueSeverity`.
+
 ## Not yet done / open items
 
 - Running both triggers simultaneously isn't guarded against (see toggles table above) — fine for
