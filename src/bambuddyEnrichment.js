@@ -9,12 +9,20 @@
 // with detecting the *event* itself. Bambuddy's API is the source for telemetry; ntfy stays the
 // source for event timing.
 function enrichmentFromStatus(status, { now = new Date() } = {}) {
-  const remainingTimeSeconds = typeof status.remainingTime === 'number' ? status.remainingTime : null;
+  // Bambuddy's actual /status response uses snake_case (subtask_name, layer_num, total_layers,
+  // remaining_time) -- confirmed against a real deploy, not the camelCase the original design
+  // spec assumed (presumably going by how BambuddyAPIClient.swift's Decodable properties are
+  // *named* on the Swift side, without accounting for its JSONDecoder's key-conversion
+  // strategy). progress/temperatures.{nozzle,bed} happen to be single words either way, so
+  // those were unaffected -- but subtaskName/layerNum/totalLayers/remainingTime were silently
+  // always undefined against the real API, exactly as null as if Bambuddy had never returned
+  // them at all.
+  const remainingTimeSeconds = typeof status.remaining_time === 'number' ? status.remaining_time : null;
   return {
     progress: typeof status.progress === 'number' ? status.progress / 100 : null,
-    jobName: status.subtaskName ?? null,
-    currentLayer: typeof status.layerNum === 'number' ? status.layerNum : null,
-    totalLayers: typeof status.totalLayers === 'number' ? status.totalLayers : null,
+    jobName: status.subtask_name ?? null,
+    currentLayer: typeof status.layer_num === 'number' ? status.layer_num : null,
+    totalLayers: typeof status.total_layers === 'number' ? status.total_layers : null,
     nozzleTempC: status.temperatures?.nozzle ?? null,
     bedTempC: status.temperatures?.bed ?? null,
     estimatedEndAt: remainingTimeSeconds !== null ? new Date(now.getTime() + remainingTimeSeconds * 1000) : null,

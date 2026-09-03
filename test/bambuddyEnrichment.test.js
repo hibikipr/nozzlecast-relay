@@ -2,14 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { enrichmentFromStatus } = require('../src/bambuddyEnrichment');
 
-test('enrichmentFromStatus maps every documented field', () => {
+test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real snake_case keys', () => {
   const now = new Date('2026-09-03T12:00:00.000Z');
   const status = {
     progress: 42,
-    subtaskName: 'benchy.gcode',
-    layerNum: 100,
-    totalLayers: 250,
-    remainingTime: 600,
+    subtask_name: 'benchy.gcode',
+    layer_num: 100,
+    total_layers: 250,
+    remaining_time: 600,
     temperatures: { nozzle: 220.5, bed: 60 },
   };
 
@@ -22,6 +22,35 @@ test('enrichmentFromStatus maps every documented field', () => {
   assert.equal(enrichment.nozzleTempC, 220.5);
   assert.equal(enrichment.bedTempC, 60);
   assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 600 * 1000);
+});
+
+test('enrichmentFromStatus does NOT read camelCase keys -- Bambuddy never sends them', () => {
+  // Regression test: an earlier version of this file assumed camelCase (subtaskName, layerNum,
+  // totalLayers, remainingTime), which is what the original design spec's field-mapping table
+  // said -- confirmed wrong against a real deploy hitting the actual API, where these fields
+  // came back silently null (not an error, just always-undefined property access) despite real
+  // data being present under the snake_case keys. This fixture is shaped exactly like a real
+  // GET /api/v1/printers/{id}/status response's relevant subset.
+  const status = {
+    progress: 100,
+    subtaskName: 'wrong-key.gcode', // camelCase -- must be ignored
+    layerNum: 999, // camelCase -- must be ignored
+    totalLayers: 999, // camelCase -- must be ignored
+    remainingTime: 999, // camelCase -- must be ignored
+    subtask_name: 'right-key.gcode',
+    layer_num: 31,
+    total_layers: 31,
+    remaining_time: 0,
+    temperatures: { bed: 25.75, bed_target: 0, nozzle: 29.34375, nozzle_target: 0 },
+  };
+
+  const enrichment = enrichmentFromStatus(status);
+
+  assert.equal(enrichment.jobName, 'right-key.gcode');
+  assert.equal(enrichment.currentLayer, 31);
+  assert.equal(enrichment.totalLayers, 31);
+  assert.equal(enrichment.nozzleTempC, 29.34375);
+  assert.equal(enrichment.bedTempC, 25.75);
 });
 
 test('enrichmentFromStatus divides progress by 100 (Bambuddy reports 0-100, not 0-1)', () => {
@@ -49,7 +78,7 @@ test('enrichmentFromStatus handles a missing temperatures object without throwin
 
 test('enrichmentFromStatus defaults now to the current time', () => {
   const before = Date.now();
-  const enrichment = enrichmentFromStatus({ remainingTime: 60 });
+  const enrichment = enrichmentFromStatus({ remaining_time: 60 });
   const after = Date.now();
 
   assert.ok(enrichment.estimatedEndAt.getTime() >= before + 60 * 1000);
