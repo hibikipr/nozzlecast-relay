@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isStartEvent, printerName, normalizedID } = require('../src/parsing');
+const {
+  isStartEvent,
+  isProgressEvent,
+  isEndEvent,
+  progressFraction,
+  endStateLabel,
+  printerName,
+  normalizedID,
+} = require('../src/parsing');
 
 test('isStartEvent matches Bambuddy\'s "Print Started"', () => {
   assert.equal(isStartEvent('Print Started'), true);
@@ -19,6 +27,56 @@ test('isStartEvent rejects non-start titles', () => {
   assert.equal(isStartEvent('Bed Cooldown Complete'), false);
   assert.equal(isStartEvent(''), false);
   assert.equal(isStartEvent(undefined), false);
+});
+
+test('isProgressEvent matches a percentage anywhere in the title', () => {
+  assert.equal(isProgressEvent('Print 50% Complete'), true);
+  assert.equal(isProgressEvent('Print 5% Complete'), true);
+  assert.equal(isProgressEvent('Print Started'), false);
+  assert.equal(isProgressEvent('Print Complete'), false);
+  assert.equal(isProgressEvent(''), false);
+  assert.equal(isProgressEvent(undefined), false);
+});
+
+test('isEndEvent matches completion, failure, and cancellation titles', () => {
+  assert.equal(isEndEvent('Print Complete'), true);
+  assert.equal(isEndEvent('Print Finished'), true);
+  assert.equal(isEndEvent('Print Failed'), true);
+  assert.equal(isEndEvent('Print Cancelled'), true);
+});
+
+test('isEndEvent rejects a percentage-complete title even though it contains "complete"', () => {
+  assert.equal(isEndEvent('Print 50% Complete'), false);
+  assert.equal(isEndEvent('Print 100% Complete'), false);
+});
+
+test('isEndEvent rejects other "...Complete" titles on the same topic that aren\'t print completions', () => {
+  assert.equal(isEndEvent('Bed Cooldown Complete'), false);
+});
+
+test('isEndEvent rejects start/unrelated titles', () => {
+  assert.equal(isEndEvent('Print Started'), false);
+  assert.equal(isEndEvent(''), false);
+  assert.equal(isEndEvent(undefined), false);
+});
+
+test('progressFraction extracts a percentage as a 0-1 fraction', () => {
+  assert.equal(progressFraction('Print 50% Complete'), 0.5);
+  assert.equal(progressFraction('Print 5% Complete'), 0.05);
+  assert.equal(progressFraction('Print 100% Complete'), 1);
+});
+
+test('progressFraction returns null when there is no percentage', () => {
+  assert.equal(progressFraction('Print Started'), null);
+  assert.equal(progressFraction(''), null);
+  assert.equal(progressFraction(undefined), null);
+});
+
+test('endStateLabel maps title keywords to a human label', () => {
+  assert.equal(endStateLabel('Print Failed'), 'Failed');
+  assert.equal(endStateLabel('Print Cancelled'), 'Cancelled');
+  assert.equal(endStateLabel('Print Complete'), 'Complete');
+  assert.equal(endStateLabel('Print Finished'), 'Complete');
 });
 
 test('printerName extracts the prefix before the first colon', () => {

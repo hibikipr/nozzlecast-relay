@@ -65,4 +65,16 @@ docker compose up -d --build
   only thing that makes a push-to-start-created activity visible/updatable anywhere (app, NSE, or
   widget extension all query `Activity<PrintActivityAttributes>.activities`, which otherwise stays
   empty for an activity the app itself never ran code for). See NozzleCast's `ARCHITECTURE.md`.
+- `POST /register-activity` — body `{ "token": string, "printerID": string, "environment": "sandbox" | "production" }`,
+  same auth. Registers the *activity's own* per-activity push token (from
+  `Activity<PrintActivityAttributes>.activityUpdates` → `activity.pushTokenUpdates` on the app
+  side), keyed by printerID rather than by token — a printer only ever has one live activity at a
+  time, and each new print's registration fully replaces whatever token was stored for that
+  printer. Once registered, the relay sends progress/completion updates directly to this token as
+  Bambuddy reports them (`event: "update"` for a percentage-progress notification, `event: "end"`
+  for a completion/failure/cancellation one), rather than depending on the app, NSE, or widget
+  ever running again after the initial push-to-start — see the design spec for why that dependency
+  doesn't hold up in practice. `printerID` should be the same value the app received in the
+  push-to-start payload's `attributes.printerID` (the relay re-normalizes it the same way
+  regardless, so an exact match isn't required).
 - `GET /healthz` — unauthenticated.

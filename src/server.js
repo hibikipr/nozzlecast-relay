@@ -1,4 +1,5 @@
 const express = require('express');
+const { normalizedID } = require('./parsing');
 
 function requireAuth(authSecret) {
   return (req, res, next) => {
@@ -9,7 +10,7 @@ function requireAuth(authSecret) {
   };
 }
 
-function createServer({ tokenStore, deviceTokenStore, authSecret }) {
+function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret }) {
   const app = express();
   app.use(express.json());
 
@@ -54,6 +55,26 @@ function createServer({ tokenStore, deviceTokenStore, authSecret }) {
       return res.status(400).json({ error: 'invalid body: require token' });
     }
     await deviceTokenStore.remove(token);
+    res.status(200).json({ ok: true });
+  });
+
+  // The activity's own per-activity push token, observed by the app via
+  // Activity<PrintActivityAttributes>.activityUpdates -> activity.pushTokenUpdates once a
+  // push-to-start-created activity exists. Registering this is what lets the relay send
+  // update/end pushes directly to that activity later, instead of relying on any local device
+  // code (NSE included) to find and update it -- see ARCHITECTURE.md's push-to-start-relay
+  // design notes for why that path can't be relied on. Keyed by printerID rather than by token:
+  // a printer only ever has one live activity/token at a time, and a fresh registration for the
+  // same printer always means a new print replacing the last one.
+  app.post('/register-activity', requireAuth(authSecret), async (req, res) => {
+    const { token, printerID, environment } = req.body || {};
+    if (!token || !printerID || !['sandbox', 'production'].includes(environment)) {
+      return res.status(400).json({ error: 'invalid body: require token, printerID, and environment (sandbox|production)' });
+    }
+    // Defensive: normalize whatever printerID the app sends through the same function the relay
+    // uses internally, so a lookup at update/end time is guaranteed to match even if the app
+    // ever forwards something other than the exact attributes.printerID it was given at start.
+    await activityTokenStore.registerToken({ printerID: normalizedID(printerID), token, environment });
     res.status(200).json({ ok: true });
   });
 

@@ -13,13 +13,13 @@ function toAppleReferenceTimestamp(date) {
   return Math.floor(date.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET;
 }
 
-function buildContentState(now) {
+function buildContentState({ startedAt, progress = 0, stateLabel = 'Printing', estimatedEndAt = null }) {
   return {
-    progress: 0,
-    stateLabel: 'Printing',
+    progress,
+    stateLabel,
     jobName: null,
-    startedAt: toAppleReferenceTimestamp(now),
-    estimatedEndAt: null,
+    startedAt: toAppleReferenceTimestamp(startedAt),
+    estimatedEndAt: estimatedEndAt ? toAppleReferenceTimestamp(estimatedEndAt) : null,
     currentLayer: null,
     totalLayers: null,
     nozzleTempC: null,
@@ -34,10 +34,27 @@ function buildPushToStartPayload({ printerID, printerName, now = new Date() }) {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
-      'content-state': buildContentState(now),
+      'content-state': buildContentState({ startedAt: now }),
       'attributes-type': 'PrintActivityAttributes',
       attributes: { printerID, printerName },
       alert: { title: 'Print Started', body: `${printerName} is printing` },
+    },
+  };
+}
+
+// Updates/ends an *existing* Live Activity via its own per-activity push token (not the
+// push-to-start token) -- same apns-topic/apns-push-type as push-to-start (Apple doesn't
+// distinguish these by push-type header, only by aps.event), but no attributes-type/attributes/
+// alert: those are only meaningful when an activity is being created ("start"), not updated or
+// ended. Every push carries the *entire* content-state (ActivityKit replaces it wholesale, not a
+// diff), so startedAt must be the print's original start time, not "now" -- the caller is
+// responsible for tracking that across calls (see ActivityTokenStore).
+function buildActivityStatePayload({ event, startedAt, progress = 0, stateLabel = 'Printing', estimatedEndAt = null, now = new Date() }) {
+  return {
+    aps: {
+      timestamp: Math.floor(now.getTime() / 1000),
+      event,
+      'content-state': buildContentState({ startedAt, progress, stateLabel, estimatedEndAt }),
     },
   };
 }
@@ -57,4 +74,4 @@ function buildBackgroundWakePayload() {
   };
 }
 
-module.exports = { buildPushToStartPayload, buildBackgroundWakePayload };
+module.exports = { buildPushToStartPayload, buildActivityStatePayload, buildBackgroundWakePayload };

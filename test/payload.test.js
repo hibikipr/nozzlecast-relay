@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPushToStartPayload, buildBackgroundWakePayload } = require('../src/payload');
+const { buildPushToStartPayload, buildActivityStatePayload, buildBackgroundWakePayload } = require('../src/payload');
 
 // Fixed offset between Unix epoch (1970-01-01) and Apple's Foundation reference date
 // (2001-01-01), in seconds -- what Swift's default (uncustomized) Date Codable conformance
@@ -71,4 +71,51 @@ test('buildPushToStartPayload defaults now to the current time', () => {
 test('buildBackgroundWakePayload produces a plain content-available push, no alert', () => {
   const payload = buildBackgroundWakePayload();
   assert.deepEqual(payload, { aps: { 'content-available': 1 } });
+});
+
+test('buildActivityStatePayload omits attributes-type/attributes/alert -- only meaningful at start', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({ event: 'update', startedAt, progress: 0.5 });
+
+  assert.equal(payload.aps.event, 'update');
+  assert.equal(payload.aps['attributes-type'], undefined);
+  assert.equal(payload.aps.attributes, undefined);
+  assert.equal(payload.aps.alert, undefined);
+});
+
+test('buildActivityStatePayload reuses the original startedAt, not "now", for content-state', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const now = new Date('2026-09-02T13:45:00.000Z');
+  const payload = buildActivityStatePayload({ event: 'update', startedAt, progress: 0.5, now });
+
+  assert.equal(payload.aps.timestamp, Math.floor(now.getTime() / 1000));
+  assert.equal(
+    payload.aps['content-state'].startedAt,
+    Math.floor(startedAt.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET,
+  );
+});
+
+test('buildActivityStatePayload carries progress and stateLabel through to content-state', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({ event: 'update', startedAt, progress: 0.5, stateLabel: 'Printing' });
+
+  assert.equal(payload.aps['content-state'].progress, 0.5);
+  assert.equal(payload.aps['content-state'].stateLabel, 'Printing');
+});
+
+test('buildActivityStatePayload supports event: "end" with a final stateLabel', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({ event: 'end', startedAt, progress: 1, stateLabel: 'Failed' });
+
+  assert.equal(payload.aps.event, 'end');
+  assert.equal(payload.aps['content-state'].progress, 1);
+  assert.equal(payload.aps['content-state'].stateLabel, 'Failed');
+});
+
+test('buildActivityStatePayload defaults progress to 0 and stateLabel to "Printing"', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({ event: 'update', startedAt });
+
+  assert.equal(payload.aps['content-state'].progress, 0);
+  assert.equal(payload.aps['content-state'].stateLabel, 'Printing');
 });
