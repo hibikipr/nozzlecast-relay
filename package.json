@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "replay": "node scripts/replay-run.js"
   },
   "dependencies": {
     "express": "^4.19.2",

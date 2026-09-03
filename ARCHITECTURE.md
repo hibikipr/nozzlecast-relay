@@ -472,6 +472,31 @@ single-operator relay. One manual end-to-end smoke test per major change against
 prints remains how essentially every bug in this document was actually found — the real
 Live-Activity-appears-and-updates-on-lock-screen behavior can't be meaningfully mocked.
 
+### Replaying a real print lifecycle for widget testing (`scripts/replay-run.js`)
+
+Rather than waiting for an actual print to test a widget change, `scripts/replay-run.js` sends
+live APNs push-to-start/update/end traffic reconstructed from real logged print lifecycles (see
+`scripts/replayRuns.js`) — real timestamps/progress/state transitions, synthetic-but-plausible
+temps/layers (the relay's own logs never recorded full content-state, only progress and state
+transitions). Uses a synthetic `printerID` (`test-replay-<run>`) that never collides with a real
+Bambuddy printer, so it's safe to run alongside a real print on another printer. Run inside the
+relay container so it shares the live `DATA_DIR`/env — it reads `tokens.json` directly to know
+who to push-to-start, and polls `activity-tokens.json` to discover the per-activity token the app
+registers via `/register-activity` (the live relay's own HTTP server handles that POST for real;
+the script only reads the file, never touches the server):
+
+```bash
+docker compose exec nozzlecast-relay node scripts/replay-run.js --run sam-p1s-finish
+docker compose exec nozzlecast-relay node scripts/replay-run.js --list
+```
+
+**This creates a real, visible Live Activity on every registered device** — not a mock. Two runs
+ship today: `sam-p1s-finish` (full happy-path RUNNING → FINISH climb to completion) and
+`sam-p1s-paused-stopped` (RUNNING → PAUSE → FAILED-with-no-HMS-issue, exercising the "Paused" and
+"Stopped" labels). `replayRuns.test.js` sanity-checks the run data itself (ordering, progress
+range) but there's no meaningful way to unit test the script's live-APNs behavior — same reasoning
+as every other real-device-only path in this document.
+
 ## Known limitations / open items
 
 - Running both trigger sources simultaneously isn't guarded against — fine since this deploy runs

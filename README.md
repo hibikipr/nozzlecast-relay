@@ -61,6 +61,19 @@ NTFY_SERVER=... NTFY_TOPIC=... NTFY_AUTH_TOKEN=... RELAY_AUTH_SECRET=... \
   npm start
 ```
 
+## Testing the Live Activity widget without a real print
+
+`scripts/replay-run.js` replays a real logged print lifecycle as live APNs traffic against
+whatever devices are currently registered — see [ARCHITECTURE.md](ARCHITECTURE.md#replaying-a-real-print-lifecycle-for-widget-testing-scriptsreplay-runjs).
+Run it inside the deployed container so it shares the live token stores:
+
+```bash
+docker compose exec nozzlecast-relay node scripts/replay-run.js --list
+docker compose exec nozzlecast-relay node scripts/replay-run.js --run sam-p1s-finish
+```
+
+This creates a real, visible Live Activity on every registered device — not a mock.
+
 ## Deploying
 
 Copy `docker-compose.example.yml` to `docker-compose.yml`, put your Apple `.p8` keys at
