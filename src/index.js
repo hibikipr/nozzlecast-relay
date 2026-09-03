@@ -347,8 +347,20 @@ async function main() {
           sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status }),
         onFailed: async ({ printerID, name, status }) =>
           sendActivityUpdate({ event: 'end', stateLabel: 'Failed', printerID, name, prefetchedStatus: status }),
-        onError: async ({ printerID, name, status }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Error', printerID, name, prefetchedStatus: status }),
+        // Deliberately a no-op as of 2026-09-03: confirmed live that HMS-error-triggered
+        // "Error" Live Activity updates were a real false-positive source, not a genuine
+        // fault -- Bambuddy's own dashboard showed this printer healthy/idle (green, no HMS
+        // fault banner) with only a routine post-print "plate not cleared" reminder at the
+        // exact moment the relay had a standing HMS code and was still labeling the activity
+        // "Error". Separately confirmed the underlying code (hms_errors reporting) is itself
+        // flaky against the real API -- the same code was observed present, then absent, then
+        // present again across polls seconds apart with nothing about the printer changing,
+        // so a naive single-poll diff treats routine flakiness as a fresh error every time it
+        // reappears. BambuddyPoller still detects and logs new HMS codes (see its "new HMS
+        // error code(s)" log line) for diagnostics -- only acting on it by pushing an update is
+        // disabled, until there's a debounced (require N consecutive misses before forgetting a
+        // code) and/or severity-filtered redesign backed by real data, not another guess.
+        onError: async () => {},
         onCorrection: async ({ printerID, name, status }) =>
           sendActivityUpdate({
             event: 'update',

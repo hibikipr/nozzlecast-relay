@@ -137,11 +137,45 @@ redundant fetch of the exact same data a moment later.
   layer (the only thing this relay can see) doesn't expose anywhere, in `/status` or
   automatically in `/print-log`. Not fixable from the relay side without a different data source.
 
+## HMS-error → "Error" update: disabled after a real false positive (2026-09-03)
+
+The `onError` path — new HMS code while active → `event: "update"`, `stateLabel: "Error"` — was
+confirmed broken against real traffic and is now a **no-op** in `index.js` (detection/logging in
+`BambuddyPoller` is untouched; only acting on it is disabled). Two independent problems, both
+confirmed with real evidence, not assumed:
+
+1. **`hms_errors` reporting is itself flaky.** The same code (`0x10007`) was observed present,
+   then absent, then present again across polls seconds apart with nothing about the printer
+   changing (no print running, no state transition). A single-poll "wasn't there last time, is
+   there now" diff treats this routine flakiness as a fresh error on every reappearance.
+2. **Severity isn't accounted for at all.** The exact incident that triggered the false "Error"
+   activity — `0x10007`, `severity: 5` — coincided with Bambuddy's own dashboard showing this
+   printer green/healthy with no HMS fault banner, only a routine "plate not cleared" post-print
+   reminder. Whatever Bambu Lab's severity scale actually means numerically wasn't confirmed
+   before this shipped; every new code was treated as equally error-worthy regardless.
+
+Re-enabling this needs both fixed with real data, not another guess: a debounce (require a code
+to be absent for N consecutive polls, not just one, before it's eligible to be flagged as "new"
+again) for problem 1, and a confirmed severity floor (once Bambu Lab's actual scale direction is
+known) for problem 2. Start/pause/resume/finish/failed/correction are unaffected — each was
+separately confirmed correct against this same real testing session.
+
+## Confirmed correct during the same investigation
+
+- Neither print from this incident was left "stuck active" on the relay's side. The print with
+  the HMS false-positive reached `PAUSE -> FAILED` and the relay correctly attempted (`event:
+  "end"`, `stateLabel: "Failed"`) to push it — that attempt was itself skipped
+  (`"No activity token registered ... skipping end push"`) because `/register-activity` never
+  landed during that print's lifetime, a separate, already-understood registration-timing gap,
+  not a new bug. The next print on the same printer registered in time and its own
+  `RUNNING -> FAILED` transition produced a successfully delivered end push
+  (`"Activity end sent for printer \"Sam P1S\" (progress=1)"`). So whatever stale
+  Live-Activity state a user sees after a print whose registration never landed in time reflects
+  that print's *last successfully delivered* push (its initial push-to-start content, in that
+  case) — not the relay failing to recognize the print had ended.
+
 ## Not yet done / open items
 
-- The exact HMS error → user-visible severity mapping is unrefined — every new code fires an
-  update today regardless of severity; may need tuning once real HMS traffic is observed
-  (Bambuddy's own status carries a `severity` field per entry that isn't used yet).
 - Running both triggers simultaneously isn't guarded against (see toggles table above) — fine for
   now since this deploy runs with only one enabled at a time.
 
