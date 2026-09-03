@@ -303,7 +303,10 @@ async function main() {
     // look "live," so it's fetched fresh here every time rather than reused from a cache.
     const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus });
     const fallbackProgress = title ? progressFraction(title) : null;
-    const progress = event === 'end' ? 1 : (enrichment?.progress ?? fallbackProgress ?? 0);
+    // No longer hardcoded to 1 for "end" -- a genuine finish naturally reads ~100% from real
+    // data anyway, but a stopped/cancelled print did NOT necessarily reach 100%, and claiming it
+    // did is just factually wrong (a print stopped at 60% showing "100%" on its way out).
+    const progress = enrichment?.progress ?? fallbackProgress ?? 0;
 
     const payload = buildActivityStatePayload({
       event,
@@ -380,17 +383,20 @@ async function main() {
         onFinish: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
         // Bambuddy's own frontend (PrintersPage.tsx's classifyPrinterStatus) treats a bare
-        // FAILED gcode_state with no HMS error attached as equivalent to FINISH -- including
-        // user-cancellations, which report as FAILED with nothing else distinguishing them from
-        // a genuine fault (see the design doc's cancel-vs-failed investigation). Only escalate
-        // to "Failed" when priorIssueSeverity shows a real qualifying (severity<=3) issue was
-        // actually confirmed active going into this transition; otherwise it's "Complete," same
-        // as a normal finish -- "Failed" is alarming and implies a real problem, which a plain
-        // user stop or an HMS-free failure isn't.
+        // FAILED gcode_state with no HMS error attached as equivalent to FINISH for GROUPING
+        // purposes (badge/dot color) -- including user-cancellations, which report as FAILED
+        // with nothing else distinguishing them from a genuine fault (see the design doc's
+        // cancel-vs-failed investigation). That grouping bucket is not the same as what
+        // Bambuddy displays as text, though: its separate getStatusDisplay still literally shows
+        // "Failed" as the label regardless of bucket, only the color/grouping changes. So the
+        // corrected wording here is "Stopped" -- not "Complete," which wrongly implies the print
+        // succeeded -- for the common case (no real issue attached, i.e. a plain user stop or an
+        // HMS-free failure); "Failed" is kept for when priorIssueSeverity shows a real qualifying
+        // issue actually was confirmed active going into this transition.
         onFailed: async ({ printerID, name, status, priorIssueSeverity, issueSeverity, issueCount }) =>
           sendActivityUpdate({
             event: 'end',
-            stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Complete',
+            stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Stopped',
             printerID,
             name,
             prefetchedStatus: status,

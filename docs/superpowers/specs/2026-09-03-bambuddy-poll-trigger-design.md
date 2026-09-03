@@ -194,12 +194,28 @@ escalate to error when an HMS code is attached."* So `onFailed` now checks
 confirmed set without observing new data or mutating any streak) for whatever qualifying
 (severity ≤ 3) issue was confirmed *just before* the failure, exposed on `ctx.priorIssueSeverity`
 (computed before that tick's own reset/re-observe, since a `FAILED` tick isn't active and so
-never re-observes `hms_errors` itself). `stateLabel` is `"Failed"` only when `priorIssueSeverity`
-is non-null; otherwise it's `"Complete"`, the same as a normal finish — a plain user stop or an
-HMS-free failure no longer shows the alarming "Failed" label it used to. The badge itself
-(`issueSeverity`/`issueCount` on the failed push) stays `null`/`null` regardless, per the existing
-"a badge means nothing once the print has ended" rule — only the stateLabel decision reads
-`priorIssueSeverity`.
+never re-observes `hms_errors` itself). The badge itself (`issueSeverity`/`issueCount` on the
+failed push) stays `null`/`null` regardless, per the existing "a badge means nothing once the
+print has ended" rule — only the stateLabel decision reads `priorIssueSeverity`.
+
+**Correction (2026-09-03): the no-issue wording was wrong the first time round, fixed to
+`"Stopped"` not `"Complete"`.** `classifyPrinterStatus`'s `'finished'` return value (grouping
+`FAILED`-with-no-HMS-error alongside `FINISH`) is Bambuddy's internal bucket for badge/dot
+*color* — it is not what Bambuddy displays as *text*. A separate function in the same file,
+`getStatusDisplay`, still literally returns `"Failed"` as the label regardless of which color
+bucket a status falls into; only the color/grouping changes, not the wording. Reusing the
+bucket's name as the literal `stateLabel` was the mistake — `"Complete"` implies the print
+succeeded, which is actively wrong for something a user manually stopped partway through.
+`stateLabel` is now `"Failed"` when `priorIssueSeverity` is non-null (unchanged), `"Stopped"`
+otherwise — accurately says the print ended without claiming success or implying a fault that
+wasn't confirmed.
+
+**Separate bug, same symptom, fixed alongside it:** `sendActivityUpdate` hardcoded
+`progress: event === 'end' ? 1 : ...` for every end event. A genuinely finished print naturally
+reads ~100% from real data anyway, so the hardcode was never actually doing anything useful there
+— but for a stopped/cancelled print it was simply wrong, showing "100%" for a print that may have
+been stopped at 60%. Now uses the same real progress source as update events
+(`enrichment?.progress ?? fallbackProgress ?? 0`) for "end" too, no special-casing.
 
 ## Correction interval lowered to 1 minute (2026-09-03)
 
