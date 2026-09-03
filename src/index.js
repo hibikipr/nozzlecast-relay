@@ -19,6 +19,7 @@ const { ApnsClient } = require('./apnsClient');
 const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
 const { enrichmentFromStatus } = require('./bambuddyEnrichment');
+const { downscaleImage } = require('./imageDownscale');
 const { createServer } = require('./server');
 const { NtfyWatcher } = require('./ntfyWatcher');
 
@@ -37,18 +38,67 @@ async function main() {
   const bambuddyClient = new BambuddyClient({ baseUrl: config.bambuddyUrl, apiKey: config.bambuddyApiKey });
   const printerIdCache = new PrinterIdCache({ bambuddyClient });
 
+  // Exact caps from PrintLiveActivityManager.downscaledCoverImage / NotificationService.
+  // downscaledThumbnail -- see imageDownscale.js for why matching these precisely (not
+  // approximating) matters: ActivityKit ends the whole Live Activity outright if the serialized
+  // content-state goes over budget, it doesn't just drop the offending field.
+  const COVER_IMAGE_MAX_DIMENSION = 36;
+  const COVER_IMAGE_MAX_BYTES = 1000;
+  const LIVE_SNAPSHOT_MAX_DIMENSION = 40;
+  const LIVE_SNAPSHOT_MAX_BYTES = 1300;
+
+  // Mints a fresh (short-lived, not cacheable) camera stream token and fetches+downscales one of
+  // Bambuddy's two camera-backed images. Lets a downscale-to-null (still over budget at the
+  // quality floor) come back as null same as any other failure -- both mean "no image field this
+  // update," never a thrown error that would abort the whole enrichment attempt.
+  const fetchDownscaledCameraImage = async (bambuddyPrinterId, fetchRaw, { maxDimension, maxBytes }) => {
+    const streamToken = await bambuddyClient.mintCameraStreamToken();
+    const raw = await fetchRaw(bambuddyPrinterId, streamToken);
+    const downscaled = await downscaleImage(raw, { maxDimension, maxBytes });
+    return downscaled ? downscaled.toString('base64') : null;
+  };
+
   // Best-effort enrichment of a content-state beyond what ntfy's alert text carries (progress,
-  // job name, layer/temperature telemetry, estimated end time) -- fails open on any error
-  // (printer not found, Bambuddy unreachable/slow, malformed response), same philosophy as the
-  // startup APNs auth check's timeout race: a slow/unreachable Bambuddy must never stall or
-  // crash a push, it should just fall back to the old text-only fields (progress from the ntfy
-  // title, everything else null).
-  const fetchEnrichment = async (printerID, name) => {
+  // job name, layer/temperature telemetry, estimated end time, and now the cover/live-camera
+  // images) -- fails open on any error (printer not found, Bambuddy unreachable/slow, malformed
+  // response), same philosophy as the startup APNs auth check's timeout race: a slow/unreachable
+  // Bambuddy must never stall or crash a push, it should just fall back to the old text-only
+  // fields (progress from the ntfy title, everything else null).
+  //
+  // coverImage is static for the whole job, so it's fetched+downscaled at most once per print and
+  // cached on activityTokenStore's per-printer record from then on (checked here before ever
+  // re-fetching); liveSnapshot is meant to look "live," so includeLiveSnapshot callers (progress/
+  // end events) get a fresh fetch+mint every time rather than a cached one -- push-to-start omits
+  // it entirely rather than spending a stream-token mint on an image that's discarded unused.
+  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false } = {}) => {
     try {
       const bambuddyPrinterId = await printerIdCache.resolve(printerID);
       if (bambuddyPrinterId === null) return null;
+
       const status = await bambuddyClient.status(bambuddyPrinterId);
-      return enrichmentFromStatus(status);
+      const enrichment = enrichmentFromStatus(status);
+
+      const cachedCoverImage = activityTokenStore.get(printerID)?.coverImage;
+      if (cachedCoverImage) {
+        enrichment.coverImage = cachedCoverImage;
+      } else {
+        enrichment.coverImage = await fetchDownscaledCameraImage(
+          bambuddyPrinterId,
+          (id, token) => bambuddyClient.cover(id, token),
+          { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
+        );
+        if (enrichment.coverImage) await activityTokenStore.setCoverImage(printerID, enrichment.coverImage);
+      }
+
+      enrichment.liveSnapshot = includeLiveSnapshot
+        ? await fetchDownscaledCameraImage(
+            bambuddyPrinterId,
+            (id, token) => bambuddyClient.cameraSnapshot(id, token),
+            { maxDimension: LIVE_SNAPSHOT_MAX_DIMENSION, maxBytes: LIVE_SNAPSHOT_MAX_BYTES },
+          )
+        : null;
+
+      return enrichment;
     } catch (error) {
       console.error(`Bambuddy enrichment failed for printer "${name}", falling back to text-only content-state:`, error);
       return null;
@@ -146,6 +196,7 @@ async function main() {
       totalLayers: enrichment?.totalLayers ?? null,
       nozzleTempC: enrichment?.nozzleTempC ?? null,
       bedTempC: enrichment?.bedTempC ?? null,
+      coverImage: enrichment?.coverImage ?? null,
     });
     for (const entry of tokenStore.list()) {
       try {
@@ -211,7 +262,9 @@ async function main() {
 
     // Prefer Bambuddy's own progress (exact) over the ntfy title's regex-parsed percentage,
     // falling back to the latter only if enrichment failed entirely -- see fetchEnrichment.
-    const enrichment = await fetchEnrichment(printerID, name);
+    // includeLiveSnapshot: true because this IS an update/end event -- liveSnapshot is meant to
+    // look "live," so it's fetched fresh here every time rather than reused from a cache.
+    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true });
     const progress = event === 'end' ? 1 : (enrichment?.progress ?? progressFraction(title));
 
     const payload = buildActivityStatePayload({
@@ -225,6 +278,8 @@ async function main() {
       totalLayers: enrichment?.totalLayers ?? null,
       nozzleTempC: enrichment?.nozzleTempC ?? null,
       bedTempC: enrichment?.bedTempC ?? null,
+      coverImage: enrichment?.coverImage ?? null,
+      liveSnapshot: enrichment?.liveSnapshot ?? null,
     });
     try {
       const client = apnsClients[activity.environment] || apnsClients.production;

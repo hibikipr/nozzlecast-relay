@@ -111,7 +111,24 @@ credential, same base URL).
 
 ## Status
 
-Not yet implemented — planning only, per Victor's request after seeing the numeric-enrichment
-pass working end-to-end. Numeric/temp/layer fields (progress, jobName, currentLayer, totalLayers,
-nozzleTempC, bedTempC, estimatedEndAt) are already live as of `575beaf`; this spec covers the two
-remaining `null` fields, `coverImage` and `liveSnapshot`.
+**Implemented.** `imageDownscale.js` (the resize+quality-loop algorithm, matching the caps table
+above exactly), `BambuddyClient.mintCameraStreamToken()/cover()/cameraSnapshot()`, and
+`ActivityTokenStore.setCoverImage()`/the `coverImage` field on its per-printer record are all in
+place. `index.js`'s `fetchEnrichment()` fetches+caches `coverImage` at most once per print
+(checking the cache first) and fetches `liveSnapshot` fresh on every call where
+`includeLiveSnapshot: true` is passed (only `sendActivityUpdate`, not `sendPushToStart`, per the
+cadence above) — both fail open the same way the numeric fields already did.
+
+Verified against the real API before writing any code: confirmed `POST /api/v1/printers/camera/
+stream-token` returns `{"token": "..."}` and needs no separate Authorization header on the two
+image endpoints (the stream token alone is sufficient); confirmed `cover` is a 512x512 PNG and
+`camera/snapshot` a 1280x720 JPEG in practice. Verified `sharp` actually works at runtime inside
+the real `node:20-alpine` Docker build (not just `npm install` succeeding) — a throwaway image
+build + container run, not an assumption. Ran the real downloaded images through the downscale
+algorithm before wiring anything up: both land comfortably under budget at quality 0.5 already
+(343B for a 36x36 cover, 490B for a 40x23 snapshot). Also measured the worst case combined
+payload per step 4's instruction (both images at their exact byte caps, plus a real ~54-char
+`jobName` string observed live): 3389 bytes total, comfortably under the ~4KB ceiling.
+
+127/127 tests pass (18 new: the image downscale algorithm, `BambuddyClient`'s new methods,
+`ActivityTokenStore` cover-image caching, `payload.js` passthrough).

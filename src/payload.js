@@ -13,11 +13,14 @@ function toAppleReferenceTimestamp(date) {
   return Math.floor(date.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET;
 }
 
-// jobName/estimatedEndAt/currentLayer/totalLayers/nozzleTempC/bedTempC all default to null,
-// same as before Bambuddy API enrichment existed -- a caller with no enrichment data (Bambuddy
-// unreachable, printer not found, etc.) gets exactly the old text-only behavior for free by
-// simply omitting them. coverImage/liveSnapshot have no source at all yet (see the Bambuddy
-// enrichment design spec's "Images" section) and stay hardcoded null here regardless.
+// jobName/estimatedEndAt/currentLayer/totalLayers/nozzleTempC/bedTempC/coverImage/liveSnapshot
+// all default to null -- a caller with no enrichment data (Bambuddy unreachable, printer not
+// found, image over budget even at the quality floor, etc.) gets exactly the old text-only
+// behavior for free by simply omitting them. coverImage/liveSnapshot, when provided, are
+// expected to already be downscaled+budget-checked base64 JPEG strings (see
+// imageDownscale.js) -- this function does no image processing of its own, it just passes
+// through whatever base64 string it's given as ContentState's `Data` field (Swift's default
+// Data Codable conformance is base64).
 function buildContentState({
   startedAt,
   progress = 0,
@@ -28,6 +31,8 @@ function buildContentState({
   totalLayers = null,
   nozzleTempC = null,
   bedTempC = null,
+  coverImage = null,
+  liveSnapshot = null,
 }) {
   return {
     progress,
@@ -39,8 +44,8 @@ function buildContentState({
     totalLayers,
     nozzleTempC,
     bedTempC,
-    coverImage: null,
-    liveSnapshot: null,
+    coverImage,
+    liveSnapshot,
   };
 }
 
@@ -54,13 +59,15 @@ function buildPushToStartPayload({
   totalLayers = null,
   nozzleTempC = null,
   bedTempC = null,
+  coverImage = null,
+  liveSnapshot = null,
 }) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
       'content-state': buildContentState({
-        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC,
+        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot,
       }),
       'attributes-type': 'PrintActivityAttributes',
       attributes: { printerID, printerName },
@@ -87,6 +94,8 @@ function buildActivityStatePayload({
   totalLayers = null,
   nozzleTempC = null,
   bedTempC = null,
+  coverImage = null,
+  liveSnapshot = null,
   now = new Date(),
 }) {
   return {
@@ -94,7 +103,7 @@ function buildActivityStatePayload({
       timestamp: Math.floor(now.getTime() / 1000),
       event,
       'content-state': buildContentState({
-        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC,
+        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot,
       }),
     },
   };

@@ -51,3 +51,64 @@ test('a non-2xx response throws instead of returning a falsy/empty result', asyn
 
   await assert.rejects(client.status(1), /status 404/);
 });
+
+test('mintCameraStreamToken() POSTs to the stream-token endpoint with bearer auth and returns the token', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, json: async () => ({ token: 'streamtok123' }) };
+  };
+  const client = new BambuddyClient({ baseUrl: 'https://bambuddy.townsville.cc', apiKey: 'bb_test', fetchImpl });
+
+  const token = await client.mintCameraStreamToken();
+
+  assert.equal(token, 'streamtok123');
+  assert.equal(calls[0].url, 'https://bambuddy.townsville.cc/api/v1/printers/camera/stream-token');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer bb_test');
+});
+
+test('mintCameraStreamToken() throws on a non-2xx response', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 500 });
+  const client = new BambuddyClient({ baseUrl: 'https://bambuddy.townsville.cc', apiKey: 'bb_test', fetchImpl });
+
+  await assert.rejects(client.mintCameraStreamToken(), /status 500/);
+});
+
+test('cover(id, token) GETs the cover endpoint with the token as a query param and returns raw bytes', async () => {
+  const calls = [];
+  const fakeBytes = Buffer.from([1, 2, 3, 4]);
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return { ok: true, status: 200, arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength) };
+  };
+  const client = new BambuddyClient({ baseUrl: 'https://bambuddy.townsville.cc', apiKey: 'bb_test', fetchImpl });
+
+  const result = await client.cover(2, 'streamtok123');
+
+  assert.ok(Buffer.isBuffer(result));
+  assert.deepEqual(result, fakeBytes);
+  assert.equal(calls[0], 'https://bambuddy.townsville.cc/api/v1/printers/2/cover?token=streamtok123');
+});
+
+test('cameraSnapshot(id, token) GETs the snapshot endpoint with the token as a query param', async () => {
+  const calls = [];
+  const fakeBytes = Buffer.from([5, 6, 7]);
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return { ok: true, status: 200, arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength) };
+  };
+  const client = new BambuddyClient({ baseUrl: 'https://bambuddy.townsville.cc', apiKey: 'bb_test', fetchImpl });
+
+  const result = await client.cameraSnapshot(2, 'streamtok123');
+
+  assert.deepEqual(result, fakeBytes);
+  assert.equal(calls[0], 'https://bambuddy.townsville.cc/api/v1/printers/2/camera/snapshot?token=streamtok123');
+});
+
+test('cover() throws on a non-2xx response', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 404 });
+  const client = new BambuddyClient({ baseUrl: 'https://bambuddy.townsville.cc', apiKey: 'bb_test', fetchImpl });
+
+  await assert.rejects(client.cover(2, 'badtoken'), /status 404/);
+});

@@ -40,7 +40,8 @@ class ActivityTokenStore {
 
   // Called when ntfy reports a new print starting for this printer: resets whatever was tracked
   // before, since a new print means a new activity and therefore a stale (or as-yet-unregistered)
-  // token for the old one.
+  // token for the old one -- including any cached coverImage, which is a render of the *previous*
+  // job's sliced plate and must not leak into the new one's Live Activity.
   async startPrint({ printerID, printerName, startedAt }) {
     this.entries.set(printerID, {
       printerID,
@@ -49,26 +50,39 @@ class ActivityTokenStore {
       token: null,
       environment: null,
       registeredAt: null,
+      coverImage: null,
     });
     await this.save();
   }
 
   // Called on POST /register-activity: records the app's freshly-observed per-activity push
-  // token for this printer, replacing any previous one. Preserves startedAt/printerName already
-  // tracked from startPrint() if present (the normal case, since ntfy's "Print Started" fires
-  // before the app finishes observing its own activity's token); if registration somehow lands
-  // first, creates a bare entry that startPrint() -- or an update/end event's own fallback --
-  // fills in.
+  // token for this printer, replacing any previous one. Preserves startedAt/printerName/
+  // coverImage already tracked from startPrint() if present (the normal case, since ntfy's
+  // "Print Started" fires before the app finishes observing its own activity's token); if
+  // registration somehow lands first, creates a bare entry that startPrint() -- or an update/end
+  // event's own fallback -- fills in.
   async registerToken({ printerID, token, environment }) {
     const existing = this.entries.get(printerID);
     this.entries.set(printerID, {
       printerID,
       printerName: existing ? existing.printerName : null,
       startedAt: existing ? existing.startedAt : null,
+      coverImage: existing ? existing.coverImage : null,
       token,
       environment,
       registeredAt: new Date().toISOString(),
     });
+    await this.save();
+  }
+
+  // Called once per print, the first time coverImage is successfully fetched+downscaled (it's
+  // static for the whole job, unlike liveSnapshot which is refetched on every update) --
+  // caches the already-downscaled base64 JPEG so later updates reuse it without re-fetching or
+  // re-encoding. No-op if the printer isn't tracked at all (e.g. the print already ended).
+  async setCoverImage(printerID, coverImageBase64) {
+    const existing = this.entries.get(printerID);
+    if (!existing) return;
+    this.entries.set(printerID, { ...existing, coverImage: coverImageBase64 });
     await this.save();
   }
 

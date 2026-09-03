@@ -121,6 +121,51 @@ test('load() reads back entries written by a previous store instance', async () 
   assert.equal(second.get('samp1s').token, 'abc123');
 });
 
+test('startPrint() records coverImage as null (nothing fetched yet for this print)', async () => {
+  const store = new ActivityTokenStore(await tempFilePath());
+  await store.load();
+  await store.startPrint({ printerID: 'samp1s', printerName: 'Sam P1S', startedAt: '2026-09-02T18:00:00.000Z' });
+
+  assert.equal(store.get('samp1s').coverImage, null);
+});
+
+test('setCoverImage() caches the base64 image for that printer', async () => {
+  const store = new ActivityTokenStore(await tempFilePath());
+  await store.load();
+  await store.startPrint({ printerID: 'samp1s', printerName: 'Sam P1S', startedAt: '2026-09-02T18:00:00.000Z' });
+  await store.setCoverImage('samp1s', 'Zm9v');
+
+  assert.equal(store.get('samp1s').coverImage, 'Zm9v');
+});
+
+test('setCoverImage() on an untracked printerID is a no-op', async () => {
+  const store = new ActivityTokenStore(await tempFilePath());
+  await store.load();
+  await assert.doesNotReject(store.setCoverImage('nope', 'Zm9v'));
+  assert.equal(store.get('nope'), undefined);
+});
+
+test('registerToken() preserves a coverImage already cached by setCoverImage()', async () => {
+  const store = new ActivityTokenStore(await tempFilePath());
+  await store.load();
+  await store.startPrint({ printerID: 'samp1s', printerName: 'Sam P1S', startedAt: '2026-09-02T18:00:00.000Z' });
+  await store.setCoverImage('samp1s', 'Zm9v');
+  await store.registerToken({ printerID: 'samp1s', token: 'abc123', environment: 'sandbox' });
+
+  assert.equal(store.get('samp1s').coverImage, 'Zm9v');
+});
+
+test('startPrint() on a new print clears the previous print\'s cached coverImage', async () => {
+  const store = new ActivityTokenStore(await tempFilePath());
+  await store.load();
+  await store.startPrint({ printerID: 'samp1s', printerName: 'Sam P1S', startedAt: '2026-09-02T18:00:00.000Z' });
+  await store.setCoverImage('samp1s', 'Zm9v');
+
+  await store.startPrint({ printerID: 'samp1s', printerName: 'Sam P1S', startedAt: '2026-09-02T20:00:00.000Z' });
+
+  assert.equal(store.get('samp1s').coverImage, null);
+});
+
 test('two different printers are tracked independently', async () => {
   const store = new ActivityTokenStore(await tempFilePath());
   await store.load();

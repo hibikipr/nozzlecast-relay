@@ -92,6 +92,20 @@ test('buildPushToStartPayload passes Bambuddy enrichment fields through to conte
   assert.equal(state.estimatedEndAt, Math.floor(estimatedEndAt.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET);
 });
 
+test('buildPushToStartPayload passes coverImage/liveSnapshot base64 strings through unchanged', () => {
+  const now = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildPushToStartPayload({
+    printerID: 'vich2c',
+    printerName: 'Vic H2C',
+    now,
+    coverImage: 'Zm9v',
+    liveSnapshot: 'YmFy',
+  });
+
+  assert.equal(payload.aps['content-state'].coverImage, 'Zm9v');
+  assert.equal(payload.aps['content-state'].liveSnapshot, 'YmFy');
+});
+
 test('buildBackgroundWakePayload produces a plain content-available push, no alert', () => {
   const payload = buildBackgroundWakePayload();
   assert.deepEqual(payload, { aps: { 'content-available': 1 } });
@@ -166,4 +180,17 @@ test('buildActivityStatePayload passes Bambuddy enrichment fields through to con
   assert.equal(state.nozzleTempC, 220.5);
   assert.equal(state.bedTempC, 60);
   assert.equal(state.estimatedEndAt, Math.floor(estimatedEndAt.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET);
+});
+
+test('buildActivityStatePayload passes coverImage/liveSnapshot base64 strings through unchanged', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const payload = buildActivityStatePayload({
+    event: 'update',
+    startedAt,
+    coverImage: 'Zm9v',
+    liveSnapshot: 'YmFy',
+  });
+
+  assert.equal(payload.aps['content-state'].coverImage, 'Zm9v');
+  assert.equal(payload.aps['content-state'].liveSnapshot, 'YmFy');
 });
