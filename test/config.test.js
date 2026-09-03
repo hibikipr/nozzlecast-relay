@@ -13,6 +13,8 @@ const FULL_ENV = {
   APNS_SANDBOX_KEY_ID: 'DEF456',
   APNS_TEAM_ID: '89863526TH',
   APNS_BUNDLE_ID: 'com.victormanuel.NozzleCast',
+  BAMBUDDY_URL: 'https://bambuddy.townsville.cc',
+  BAMBUDDY_API_KEY: 'bb_test',
 };
 
 test('loadConfig returns normalized config when all vars present', () => {
@@ -28,12 +30,19 @@ test('loadConfig returns normalized config when all vars present', () => {
   assert.equal(config.apnsTeamId, '89863526TH');
   assert.equal(config.apnsBundleId, 'com.victormanuel.NozzleCast');
   assert.equal(config.apnsTopic, 'com.victormanuel.NozzleCast.push-type.liveactivity');
+  assert.equal(config.bambuddyUrl, 'https://bambuddy.townsville.cc');
+  assert.equal(config.bambuddyApiKey, 'bb_test');
   assert.equal(config.dataDir, '/data');
 });
 
 test('loadConfig strips a trailing slash from NTFY_SERVER', () => {
   const config = loadConfig({ ...FULL_ENV, NTFY_SERVER: 'https://ntfy.townsville.cc/' });
   assert.equal(config.ntfyServer, 'https://ntfy.townsville.cc');
+});
+
+test('loadConfig strips a trailing slash from BAMBUDDY_URL', () => {
+  const config = loadConfig({ ...FULL_ENV, BAMBUDDY_URL: 'https://bambuddy.townsville.cc/' });
+  assert.equal(config.bambuddyUrl, 'https://bambuddy.townsville.cc');
 });
 
 test('loadConfig respects DATA_DIR override', () => {

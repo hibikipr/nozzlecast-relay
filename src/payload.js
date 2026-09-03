@@ -13,28 +13,55 @@ function toAppleReferenceTimestamp(date) {
   return Math.floor(date.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET;
 }
 
-function buildContentState({ startedAt, progress = 0, stateLabel = 'Printing', estimatedEndAt = null }) {
+// jobName/estimatedEndAt/currentLayer/totalLayers/nozzleTempC/bedTempC all default to null,
+// same as before Bambuddy API enrichment existed -- a caller with no enrichment data (Bambuddy
+// unreachable, printer not found, etc.) gets exactly the old text-only behavior for free by
+// simply omitting them. coverImage/liveSnapshot have no source at all yet (see the Bambuddy
+// enrichment design spec's "Images" section) and stay hardcoded null here regardless.
+function buildContentState({
+  startedAt,
+  progress = 0,
+  stateLabel = 'Printing',
+  jobName = null,
+  estimatedEndAt = null,
+  currentLayer = null,
+  totalLayers = null,
+  nozzleTempC = null,
+  bedTempC = null,
+}) {
   return {
     progress,
     stateLabel,
-    jobName: null,
+    jobName,
     startedAt: toAppleReferenceTimestamp(startedAt),
     estimatedEndAt: estimatedEndAt ? toAppleReferenceTimestamp(estimatedEndAt) : null,
-    currentLayer: null,
-    totalLayers: null,
-    nozzleTempC: null,
-    bedTempC: null,
+    currentLayer,
+    totalLayers,
+    nozzleTempC,
+    bedTempC,
     coverImage: null,
     liveSnapshot: null,
   };
 }
 
-function buildPushToStartPayload({ printerID, printerName, now = new Date() }) {
+function buildPushToStartPayload({
+  printerID,
+  printerName,
+  now = new Date(),
+  jobName = null,
+  estimatedEndAt = null,
+  currentLayer = null,
+  totalLayers = null,
+  nozzleTempC = null,
+  bedTempC = null,
+}) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
-      'content-state': buildContentState({ startedAt: now }),
+      'content-state': buildContentState({
+        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC,
+      }),
       'attributes-type': 'PrintActivityAttributes',
       attributes: { printerID, printerName },
       alert: { title: 'Print Started', body: `${printerName} is printing` },
@@ -49,12 +76,26 @@ function buildPushToStartPayload({ printerID, printerName, now = new Date() }) {
 // ended. Every push carries the *entire* content-state (ActivityKit replaces it wholesale, not a
 // diff), so startedAt must be the print's original start time, not "now" -- the caller is
 // responsible for tracking that across calls (see ActivityTokenStore).
-function buildActivityStatePayload({ event, startedAt, progress = 0, stateLabel = 'Printing', estimatedEndAt = null, now = new Date() }) {
+function buildActivityStatePayload({
+  event,
+  startedAt,
+  progress = 0,
+  stateLabel = 'Printing',
+  jobName = null,
+  estimatedEndAt = null,
+  currentLayer = null,
+  totalLayers = null,
+  nozzleTempC = null,
+  bedTempC = null,
+  now = new Date(),
+}) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event,
-      'content-state': buildContentState({ startedAt, progress, stateLabel, estimatedEndAt }),
+      'content-state': buildContentState({
+        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC,
+      }),
     },
   };
 }

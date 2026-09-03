@@ -15,6 +15,8 @@ services:
       APNS_SANDBOX_KEY_ID: "${APNS_SANDBOX_KEY_ID}"
       APNS_TEAM_ID: "89863526TH"
       APNS_BUNDLE_ID: "com.victormanuel.NozzleCast"
+      BAMBUDDY_URL: "https://your-bambuddy-instance.example.com"
+      BAMBUDDY_API_KEY: "${BAMBUDDY_API_KEY}"
     volumes:
       - ./data:/data
       - ./secrets/AuthKey.p8:/secrets/AuthKey.p8:ro

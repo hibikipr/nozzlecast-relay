@@ -22,6 +22,8 @@ Design: [docs/superpowers/specs/2026-09-02-push-to-start-relay-design.md](docs/s
 | `APNS_SANDBOX_KEY_ID` | Sandbox APNs auth key ID |
 | `APNS_TEAM_ID` | Apple Developer Team ID (shared by both keys) |
 | `APNS_BUNDLE_ID` | NozzleCast's bundle ID (relay derives the APNs topic by appending `.push-type.liveactivity`) |
+| `BAMBUDDY_URL` | Base URL of your Bambuddy instance |
+| `BAMBUDDY_API_KEY` | Bambuddy API key. **Recommend a dedicated, read-only key** (Bambuddy supports scoped keys independent of print-control/queue permissions) — the relay only ever reads printer status to enrich a Live Activity, it never needs to control anything |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
 
@@ -40,6 +42,7 @@ npm test
 NTFY_SERVER=... NTFY_TOPIC=... NTFY_AUTH_TOKEN=... RELAY_AUTH_SECRET=... \
   APNS_KEY_PATH=... APNS_KEY_ID=... APNS_SANDBOX_KEY_PATH=... APNS_SANDBOX_KEY_ID=... \
   APNS_TEAM_ID=... APNS_BUNDLE_ID=... \
+  BAMBUDDY_URL=... BAMBUDDY_API_KEY=... \
   npm start
 ```
 

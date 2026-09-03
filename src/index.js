@@ -16,6 +16,9 @@ const { TokenStore } = require('./tokenStore');
 const { ActivityTokenStore } = require('./activityTokenStore');
 const { ApnsAuthProvider } = require('./apnsAuth');
 const { ApnsClient } = require('./apnsClient');
+const { BambuddyClient } = require('./bambuddyClient');
+const { PrinterIdCache } = require('./printerIdCache');
+const { enrichmentFromStatus } = require('./bambuddyEnrichment');
 const { createServer } = require('./server');
 const { NtfyWatcher } = require('./ntfyWatcher');
 
@@ -30,6 +33,27 @@ async function main() {
 
   const activityTokenStore = new ActivityTokenStore(path.join(config.dataDir, 'activity-tokens.json'));
   await activityTokenStore.load();
+
+  const bambuddyClient = new BambuddyClient({ baseUrl: config.bambuddyUrl, apiKey: config.bambuddyApiKey });
+  const printerIdCache = new PrinterIdCache({ bambuddyClient });
+
+  // Best-effort enrichment of a content-state beyond what ntfy's alert text carries (progress,
+  // job name, layer/temperature telemetry, estimated end time) -- fails open on any error
+  // (printer not found, Bambuddy unreachable/slow, malformed response), same philosophy as the
+  // startup APNs auth check's timeout race: a slow/unreachable Bambuddy must never stall or
+  // crash a push, it should just fall back to the old text-only fields (progress from the ntfy
+  // title, everything else null).
+  const fetchEnrichment = async (printerID, name) => {
+    try {
+      const bambuddyPrinterId = await printerIdCache.resolve(printerID);
+      if (bambuddyPrinterId === null) return null;
+      const status = await bambuddyClient.status(bambuddyPrinterId);
+      return enrichmentFromStatus(status);
+    } catch (error) {
+      console.error(`Bambuddy enrichment failed for printer "${name}", falling back to text-only content-state:`, error);
+      return null;
+    }
+  };
 
   // Apple APNs auth keys are ordinarily environment-agnostic, but confirmed empirically against
   // a real deploy that this key pair isn't: a production-scoped key's JWT got a 403
@@ -112,7 +136,17 @@ async function main() {
   };
 
   const sendPushToStart = async ({ printerID, name }) => {
-    const payload = buildPushToStartPayload({ printerID, printerName: name });
+    const enrichment = await fetchEnrichment(printerID, name);
+    const payload = buildPushToStartPayload({
+      printerID,
+      printerName: name,
+      jobName: enrichment?.jobName ?? null,
+      estimatedEndAt: enrichment?.estimatedEndAt ?? null,
+      currentLayer: enrichment?.currentLayer ?? null,
+      totalLayers: enrichment?.totalLayers ?? null,
+      nozzleTempC: enrichment?.nozzleTempC ?? null,
+      bedTempC: enrichment?.bedTempC ?? null,
+    });
     for (const entry of tokenStore.list()) {
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
@@ -172,11 +206,26 @@ async function main() {
     }
 
     const event = isEndEvent(title) ? 'end' : 'update';
-    const progress = event === 'end' ? 1 : progressFraction(title);
     const stateLabel = event === 'end' ? endStateLabel(title) : 'Printing';
     const startedAt = activity.startedAt ? new Date(activity.startedAt) : new Date();
 
-    const payload = buildActivityStatePayload({ event, startedAt, progress, stateLabel });
+    // Prefer Bambuddy's own progress (exact) over the ntfy title's regex-parsed percentage,
+    // falling back to the latter only if enrichment failed entirely -- see fetchEnrichment.
+    const enrichment = await fetchEnrichment(printerID, name);
+    const progress = event === 'end' ? 1 : (enrichment?.progress ?? progressFraction(title));
+
+    const payload = buildActivityStatePayload({
+      event,
+      startedAt,
+      progress,
+      stateLabel,
+      jobName: enrichment?.jobName ?? null,
+      estimatedEndAt: enrichment?.estimatedEndAt ?? null,
+      currentLayer: enrichment?.currentLayer ?? null,
+      totalLayers: enrichment?.totalLayers ?? null,
+      nozzleTempC: enrichment?.nozzleTempC ?? null,
+      bedTempC: enrichment?.bedTempC ?? null,
+    });
     try {
       const client = apnsClients[activity.environment] || apnsClients.production;
       const result = await client.send({ token: activity.token, environment: activity.environment, payload });

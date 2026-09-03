@@ -68,6 +68,30 @@ test('buildPushToStartPayload defaults now to the current time', () => {
   assert.ok(payload.aps.timestamp <= Math.floor(after / 1000));
 });
 
+test('buildPushToStartPayload passes Bambuddy enrichment fields through to content-state when given', () => {
+  const now = new Date('2026-09-02T13:23:34.000Z');
+  const estimatedEndAt = new Date('2026-09-02T13:33:34.000Z');
+  const payload = buildPushToStartPayload({
+    printerID: 'vich2c',
+    printerName: 'Vic H2C',
+    now,
+    jobName: 'benchy.gcode',
+    currentLayer: 10,
+    totalLayers: 200,
+    nozzleTempC: 220,
+    bedTempC: 60,
+    estimatedEndAt,
+  });
+  const state = payload.aps['content-state'];
+
+  assert.equal(state.jobName, 'benchy.gcode');
+  assert.equal(state.currentLayer, 10);
+  assert.equal(state.totalLayers, 200);
+  assert.equal(state.nozzleTempC, 220);
+  assert.equal(state.bedTempC, 60);
+  assert.equal(state.estimatedEndAt, Math.floor(estimatedEndAt.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET);
+});
+
 test('buildBackgroundWakePayload produces a plain content-available push, no alert', () => {
   const payload = buildBackgroundWakePayload();
   assert.deepEqual(payload, { aps: { 'content-available': 1 } });
@@ -118,4 +142,28 @@ test('buildActivityStatePayload defaults progress to 0 and stateLabel to "Printi
 
   assert.equal(payload.aps['content-state'].progress, 0);
   assert.equal(payload.aps['content-state'].stateLabel, 'Printing');
+});
+
+test('buildActivityStatePayload passes Bambuddy enrichment fields through to content-state when given', () => {
+  const startedAt = new Date('2026-09-02T13:23:34.000Z');
+  const estimatedEndAt = new Date('2026-09-02T13:33:34.000Z');
+  const payload = buildActivityStatePayload({
+    event: 'update',
+    startedAt,
+    progress: 0.42,
+    jobName: 'benchy.gcode',
+    currentLayer: 100,
+    totalLayers: 250,
+    nozzleTempC: 220.5,
+    bedTempC: 60,
+    estimatedEndAt,
+  });
+  const state = payload.aps['content-state'];
+
+  assert.equal(state.jobName, 'benchy.gcode');
+  assert.equal(state.currentLayer, 100);
+  assert.equal(state.totalLayers, 250);
+  assert.equal(state.nozzleTempC, 220.5);
+  assert.equal(state.bedTempC, 60);
+  assert.equal(state.estimatedEndAt, Math.floor(estimatedEndAt.getTime() / 1000) - APPLE_REFERENCE_DATE_UNIX_OFFSET);
 });

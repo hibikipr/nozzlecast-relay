@@ -9,6 +9,8 @@ const REQUIRED_VARS = [
   'APNS_SANDBOX_KEY_ID',
   'APNS_TEAM_ID',
   'APNS_BUNDLE_ID',
+  'BAMBUDDY_URL',
+  'BAMBUDDY_API_KEY',
 ];
 
 function loadConfig(env = process.env) {
@@ -36,6 +38,11 @@ function loadConfig(env = process.env) {
     apnsTeamId: env.APNS_TEAM_ID,
     apnsBundleId: env.APNS_BUNDLE_ID,
     apnsTopic: `${env.APNS_BUNDLE_ID}.push-type.liveactivity`,
+    // Recommended to be a dedicated, read-only Bambuddy API key (Bambuddy supports scoped keys
+    // independent of print-control/queue permissions) -- the relay only ever reads printer
+    // status to enrich a Live Activity, it never needs to control anything.
+    bambuddyUrl: env.BAMBUDDY_URL.replace(/\/$/, ''),
+    bambuddyApiKey: env.BAMBUDDY_API_KEY,
     dataDir: env.DATA_DIR || '/data',
   };
 }

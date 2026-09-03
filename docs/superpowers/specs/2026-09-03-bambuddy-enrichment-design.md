@@ -1,5 +1,13 @@
 # Bambuddy API enrichment for richer Live Activities
 
+**Status: implemented (2026-09-03), steps 1–5 and 7–8 of the Plan below.** `BambuddyClient`,
+`PrinterIdCache`, and the pure `enrichmentFromStatus` mapping are in place; `sendPushToStart` and
+`sendActivityUpdate` in `index.js` both call through a single fail-open `fetchEnrichment` helper
+before building their payload, falling back to the old text-only fields (progress from the ntfy
+title, everything else `null`) on any Bambuddy error. `progress`/`estimatedEndAt` prefer
+Bambuddy's numbers over the ntfy-title-parsed fallback as specified. Step 6 (`coverImage`/
+`liveSnapshot`) remains a deliberate follow-up, not started.
+
 ## Problem
 
 Every Live Activity field the relay controls today comes from parsing Bambuddy's ntfy alert
