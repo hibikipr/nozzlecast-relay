@@ -119,6 +119,25 @@ place. `index.js`'s `fetchEnrichment()` fetches+caches `coverImage` at most once
 `includeLiveSnapshot: true` is passed (only `sendActivityUpdate`, not `sendPushToStart`, per the
 cadence above) — both fail open the same way the numeric fields already did.
 
+**Post-implementation fix (2026-09-03), found via a real live test:** `fetchEnrichment()`
+originally wrapped the numeric telemetry fetch (`status`/`enrichmentFromStatus`) and both image
+fetches in one `try`/`catch`. Confirmed live: Bambuddy's camera endpoints are meaningfully less
+reliable than its status endpoint — a `camera/snapshot` request returned a `503` mid-print, and
+because that error propagated out of the single shared `try`, it discarded the *entire* already-
+successful enrichment, not just the image field. The resulting push sent `progress: 0` and
+`estimatedEndAt: null` for a print that Bambuddy's own status endpoint reported as well underway
+and perfectly healthy at that exact moment — froze the Live Activity's percentage/countdown
+display until whatever push happened to succeed next. Exact log evidence: `"Bambuddy enrichment
+failed for printer... camera/snapshot... failed with status 503"` immediately followed by
+`"Activity update sent for printer... (progress=0)"`, twice in the same print.
+
+Fixed by splitting `fetchEnrichment()` into separate fail-open boundaries: the numeric-telemetry
+fetch keeps its own `try`/`catch` (a failure there still means "nothing to send, return null" —
+unchanged), but `coverImage` and `liveSnapshot` now each get their own `try`/`catch` around just
+that fetch, defaulting only that one field to `null` on failure while the numeric fields already
+successfully fetched moments earlier are preserved and sent as normal. An image-endpoint hiccup
+now costs exactly one field, never the whole update.
+
 Verified against the real API before writing any code: confirmed `POST /api/v1/printers/camera/
 stream-token` returns `{"token": "..."}` and needs no separate Authorization header on the two
 image endpoints (the stream token alone is sufficient); confirmed `cover` is a 512x512 PNG and

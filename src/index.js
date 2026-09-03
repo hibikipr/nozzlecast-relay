@@ -67,46 +67,69 @@ async function main() {
   // Bambuddy must never stall or crash a push, it should just fall back to the old text-only
   // fields (progress from the ntfy title, everything else null).
   //
+  // The numeric telemetry fetch (status + enrichmentFromStatus) and the two image fetches are
+  // DELIBERATELY separate fail-open boundaries, not one big try/catch around everything --
+  // confirmed live that a single camera/snapshot 503 (Bambuddy's camera endpoint is far less
+  // reliable than its status endpoint) discarded an otherwise-fully-successful enrichment
+  // entirely, sending progress=0/estimatedEndAt=null for a print that was actually well
+  // underway with a perfectly good status response -- froze the Live Activity's display for
+  // however long until the next event. An image fetch failing should only cost that one image
+  // field, never the numeric fields a live-snapshot/coverImage failure has nothing to do with.
+  //
   // coverImage is static for the whole job, so it's fetched+downscaled at most once per print and
   // cached on activityTokenStore's per-printer record from then on (checked here before ever
   // re-fetching); liveSnapshot is meant to look "live," so includeLiveSnapshot callers (progress/
   // end events) get a fresh fetch+mint every time rather than a cached one -- push-to-start omits
   // it entirely rather than spending a stream-token mint on an image that's discarded unused.
   const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false, prefetchedStatus = null } = {}) => {
+    let bambuddyPrinterId;
+    let enrichment;
     try {
-      const bambuddyPrinterId = await printerIdCache.resolve(printerID);
+      bambuddyPrinterId = await printerIdCache.resolve(printerID);
       if (bambuddyPrinterId === null) return null;
 
       // BambuddyPoller already fetches a fresh status every tick to detect transitions -- reuse
       // that instead of a redundant second call when it's the one driving this enrichment.
       const status = prefetchedStatus || await bambuddyClient.status(bambuddyPrinterId);
-      const enrichment = enrichmentFromStatus(status);
+      enrichment = enrichmentFromStatus(status);
+    } catch (error) {
+      console.error(`Bambuddy enrichment failed for printer "${name}", falling back to text-only content-state:`, error);
+      return null;
+    }
 
-      const cachedCoverImage = activityTokenStore.get(printerID)?.coverImage;
-      if (cachedCoverImage) {
-        enrichment.coverImage = cachedCoverImage;
-      } else {
+    const cachedCoverImage = activityTokenStore.get(printerID)?.coverImage;
+    if (cachedCoverImage) {
+      enrichment.coverImage = cachedCoverImage;
+    } else {
+      try {
         enrichment.coverImage = await fetchDownscaledCameraImage(
           bambuddyPrinterId,
           (id, token) => bambuddyClient.cover(id, token),
           { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
         );
         if (enrichment.coverImage) await activityTokenStore.setCoverImage(printerID, enrichment.coverImage);
+      } catch (error) {
+        console.error(`coverImage fetch failed for printer "${name}", sending this update without it:`, error);
+        enrichment.coverImage = null;
       }
-
-      enrichment.liveSnapshot = includeLiveSnapshot
-        ? await fetchDownscaledCameraImage(
-            bambuddyPrinterId,
-            (id, token) => bambuddyClient.cameraSnapshot(id, token),
-            { maxDimension: LIVE_SNAPSHOT_MAX_DIMENSION, maxBytes: LIVE_SNAPSHOT_MAX_BYTES },
-          )
-        : null;
-
-      return enrichment;
-    } catch (error) {
-      console.error(`Bambuddy enrichment failed for printer "${name}", falling back to text-only content-state:`, error);
-      return null;
     }
+
+    if (includeLiveSnapshot) {
+      try {
+        enrichment.liveSnapshot = await fetchDownscaledCameraImage(
+          bambuddyPrinterId,
+          (id, token) => bambuddyClient.cameraSnapshot(id, token),
+          { maxDimension: LIVE_SNAPSHOT_MAX_DIMENSION, maxBytes: LIVE_SNAPSHOT_MAX_BYTES },
+        );
+      } catch (error) {
+        console.error(`liveSnapshot fetch failed for printer "${name}", sending this update without it:`, error);
+        enrichment.liveSnapshot = null;
+      }
+    } else {
+      enrichment.liveSnapshot = null;
+    }
+
+    return enrichment;
   };
 
   // Apple APNs auth keys are ordinarily environment-agnostic, but confirmed empirically against
