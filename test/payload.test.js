@@ -13,7 +13,11 @@ test('buildPushToStartPayload produces the documented aps shape', () => {
 
   assert.equal(payload.aps.event, 'start');
   assert.equal(payload.aps.timestamp, Math.floor(now.getTime() / 1000));
-  assert.equal(payload.aps['attributes-type'], 'PrintActivityAttributes');
+  // Module-qualified: PrintActivityAttributes lives in the app's NozzleCastShared package, and
+  // ActivityKit identifies the type by this exact string -- a bare name here was accepted by
+  // APNs (it doesn't validate this field) but silently dropped by the OS, confirmed live across
+  // 4 test prints where push-to-start never once produced a visible Live Activity.
+  assert.equal(payload.aps['attributes-type'], 'NozzleCastShared.PrintActivityAttributes');
   assert.deepEqual(payload.aps.attributes, { printerID: 'vich2c', printerName: 'Vic H2C' });
   assert.deepEqual(payload.aps.alert, { title: 'Print Started', body: 'Vic H2C is printing' });
 });

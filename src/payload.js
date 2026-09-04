@@ -82,7 +82,16 @@ function buildPushToStartPayload({
       'content-state': buildContentState({
         startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
       }),
-      'attributes-type': 'PrintActivityAttributes',
+      // Must be the module-qualified Swift type name, not the bare struct name: ActivityKit
+      // identifies an ActivityAttributes type by this string at the OS level, and
+      // PrintActivityAttributes now lives in the app's NozzleCastShared package (moved there so
+      // the app/widget/NSE targets share one compiled definition), not the app's own module. APNs
+      // doesn't validate this string, so a mismatch was always accepted (200) and always silently
+      // dropped on-device -- confirmed live: push-to-start never once produced a visible Lock
+      // Screen activity across 4 consecutive test prints, while the app's own local
+      // Activity.request(...) call (PrintLiveActivityManager.sync(), which resolves the Swift
+      // type at compile time and never touches this string) worked every time.
+      'attributes-type': 'NozzleCastShared.PrintActivityAttributes',
       attributes: { printerID, printerName },
       alert: { title: 'Print Started', body: `${printerName} is printing` },
     },

@@ -347,7 +347,7 @@ All three payload builders live in `payload.js`.
     "timestamp": "<unix seconds>",
     "event": "start",
     "content-state": { /* see below */ },
-    "attributes-type": "PrintActivityAttributes",
+    "attributes-type": "NozzleCastShared.PrintActivityAttributes",
     "attributes": { "printerID": "<normalizedID>", "printerName": "<parsed name>" },
     "alert": { "title": "Print Started", "body": "<printerName> is printing" }
   }
