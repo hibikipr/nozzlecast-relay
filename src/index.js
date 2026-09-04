@@ -25,6 +25,24 @@ const { NtfyWatcher } = require('./ntfyWatcher');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 
+// Full push payloads are logged verbatim for debugging (e.g. checking attributes-type against
+// the app's actual Swift struct byte-for-byte -- APNs doesn't validate that field, so a mismatch
+// is otherwise invisible from the relay side). coverImage/liveSnapshot are base64 and can be tens
+// of KB; replace them with a length marker so logs stay readable without losing anything that
+// actually needs checking.
+function redactImagesForLogging(payload) {
+  const clone = JSON.parse(JSON.stringify(payload));
+  const contentState = clone.aps?.['content-state'];
+  if (contentState) {
+    for (const field of ['coverImage', 'liveSnapshot']) {
+      if (typeof contentState[field] === 'string') {
+        contentState[field] = `<base64, ${contentState[field].length} chars>`;
+      }
+    }
+  }
+  return clone;
+}
+
 async function main() {
   const config = loadConfig();
 
@@ -282,6 +300,7 @@ async function main() {
       issueSeverity,
       issueCount,
     });
+    console.log(`Push-to-start payload for printer "${name}": ${JSON.stringify(redactImagesForLogging(payload))}`);
     for (const entry of tokenStore.list()) {
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
@@ -488,4 +507,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { main, redactImagesForLogging };

@@ -354,6 +354,16 @@ All three payload builders live in `payload.js`.
 }
 ```
 
+The full push-to-start payload is logged verbatim (`Push-to-start payload for printer "<name>": <json>`)
+before sending, with `coverImage`/`liveSnapshot` replaced by a `<base64, N chars>` marker to keep
+log lines readable — see `redactImagesForLogging` in `index.js`. This exists specifically because
+APNs does not validate `attributes-type` (or `attributes`) at all: a mismatch against the app's
+actual Swift type is accepted (200) and silently dropped on-device with zero relay-visible signal,
+confirmed live 2026-09-04 when a bare `PrintActivityAttributes` (missing its `NozzleCastShared.`
+module qualification) passed every relay-side check yet never produced a visible Live Activity.
+Logging the exact bytes sent is the only way to catch a future mismatch here by inspection instead
+of by trial and error.
+
 **Activity update/end** (`aps.event: "update" | "end"`, no `attributes-type`/`attributes`/`alert` —
 those are only meaningful when creating an activity):
 ```json
