@@ -5,7 +5,7 @@
 The relay's only trigger source has been Bambuddy's own ntfy notifications: milestone-based
 (start, ~25/50/75% progress, complete/failed), entirely on Bambuddy's own schedule, with no
 visibility into pause or a live error condition, and no way to control update cadence
-independently of those milestones. Victor asked for three related changes:
+independently of those milestones. Three related changes were requested:
 
 1. Trigger directly off Bambuddy's own printer-status API instead of ntfy.
 2. Rely on ActivityKit's native countdown timer for time-remaining display between updates
@@ -260,8 +260,8 @@ even though FINISH hasn't been directly confirmed to exhibit the same reset.
 ## Correction interval lowered to 1 minute (2026-09-03)
 
 `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS=60000` in this deploy's `.env` (was the 10-minute default).
-Victor's print jobs run ~9 minutes, so the 10-minute correction never fired at all — the only
-progress% update he ever saw was whatever real state-change event happened to land (one print
+This deployment's print jobs run ~9 minutes, so the 10-minute correction never fired at all — the
+only progress% update ever seen was whatever real state-change event happened to land (one print
 jumped 1% → 63% at a pause, since that was the first content push since start). Also fixed a
 related gap while making this change: `docker-compose.yml`'s `environment:` block never actually
 passed `BAMBUDDY_POLL_INTERVAL_MS`/`LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` through to the
@@ -283,7 +283,7 @@ between real transitions.
 
 ## `remaining_time` staying implausible for an entire print (2026-09-03)
 
-Confirmed not a relay bug: for at least one specific test G-code file Victor kept reprinting
+Confirmed not a relay bug: for at least one specific test G-code file that kept getting reprinted
 ("No AMS Version..." / "Grumpy Unicorn — Plate 6"), Bambuddy's `remaining_time` never moved off
 ~3 (minutes — see the units bug above; read as "~3 seconds" at the time this was investigated,
 before the units bug was found) for the print's entire duration, regardless of real progress

@@ -118,3 +118,11 @@ docker compose up -d --build
   the app received in the push-to-start payload's `attributes.printerID` (the relay re-normalizes
   it the same way regardless, so an exact match isn't required).
 - `GET /healthz` — unauthenticated.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)

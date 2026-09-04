@@ -91,7 +91,7 @@ nozzlecast-relay/
 
 - [ ] **Step 2: Install dependencies**
 
-Run: `cd /Users/hibikipr/Developer/nozzlecast-relay && npm install`
+Run: `cd ~/Developer/nozzlecast-relay && npm install`
 Expected: `package-lock.json` created, `node_modules/` populated, no errors.
 
 - [ ] **Step 3: Create `.gitignore`**
@@ -113,33 +113,33 @@ const assert = require('node:assert/strict');
 const { loadConfig } = require('../src/config');
 
 const FULL_ENV = {
-  NTFY_SERVER: 'https://ntfy.townsville.cc',
-  NTFY_TOPIC: 'townsville-3dprinter',
+  NTFY_SERVER: 'https://ntfy.example.com',
+  NTFY_TOPIC: '3dprinter-alerts',
   NTFY_AUTH_TOKEN: 'tk_test',
   RELAY_AUTH_SECRET: 'secret123',
   APNS_KEY_PATH: '/secrets/AuthKey_TEST.p8',
   APNS_KEY_ID: 'ABC123',
-  APNS_TEAM_ID: '89863526TH',
-  APNS_BUNDLE_ID: 'com.victormanuel.NozzleCast',
+  APNS_TEAM_ID: 'ABCDE12345',
+  APNS_BUNDLE_ID: 'com.example.NozzleCast',
 };
 
 test('loadConfig returns normalized config when all vars present', () => {
   const config = loadConfig(FULL_ENV);
-  assert.equal(config.ntfyServer, 'https://ntfy.townsville.cc');
-  assert.equal(config.ntfyTopic, 'townsville-3dprinter');
+  assert.equal(config.ntfyServer, 'https://ntfy.example.com');
+  assert.equal(config.ntfyTopic, '3dprinter-alerts');
   assert.equal(config.ntfyAuthToken, 'tk_test');
   assert.equal(config.relayAuthSecret, 'secret123');
   assert.equal(config.apnsKeyPath, '/secrets/AuthKey_TEST.p8');
   assert.equal(config.apnsKeyId, 'ABC123');
-  assert.equal(config.apnsTeamId, '89863526TH');
-  assert.equal(config.apnsBundleId, 'com.victormanuel.NozzleCast');
-  assert.equal(config.apnsTopic, 'com.victormanuel.NozzleCast.push-type.liveactivity');
+  assert.equal(config.apnsTeamId, 'ABCDE12345');
+  assert.equal(config.apnsBundleId, 'com.example.NozzleCast');
+  assert.equal(config.apnsTopic, 'com.example.NozzleCast.push-type.liveactivity');
   assert.equal(config.dataDir, '/data');
 });
 
 test('loadConfig strips a trailing slash from NTFY_SERVER', () => {
-  const config = loadConfig({ ...FULL_ENV, NTFY_SERVER: 'https://ntfy.townsville.cc/' });
-  assert.equal(config.ntfyServer, 'https://ntfy.townsville.cc');
+  const config = loadConfig({ ...FULL_ENV, NTFY_SERVER: 'https://ntfy.example.com/' });
+  assert.equal(config.ntfyServer, 'https://ntfy.example.com');
 });
 
 test('loadConfig respects DATA_DIR override', () => {
@@ -724,7 +724,7 @@ test('getToken returns a JWT with the documented ES256 header and claims', () =>
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -735,7 +735,7 @@ test('getToken returns a JWT with the documented ES256 header and claims', () =>
   assert.equal(decodedHeader.kid, 'KEYID123');
 
   const verified = jwt.verify(token, publicKey, { algorithms: ['ES256'] });
-  assert.equal(verified.iss, '89863526TH');
+  assert.equal(verified.iss, 'ABCDE12345');
   assert.equal(verified.iat, Math.floor(currentTime / 1000));
 });
 
@@ -745,7 +745,7 @@ test('getToken reuses the cached token within the 20-minute window', () => {
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -762,7 +762,7 @@ test('getToken regenerates once 20 minutes have elapsed', () => {
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -782,7 +782,7 @@ test('readKeyFile defaults to reading keyPath from disk', () => {
   const keyPath = path.join(dir, 'AuthKey_TEST.p8');
   fs.writeFileSync(keyPath, privateKey);
 
-  const provider = new ApnsAuthProvider({ keyPath, keyId: 'KEYID123', teamId: '89863526TH' });
+  const provider = new ApnsAuthProvider({ keyPath, keyId: 'KEYID123', teamId: 'ABCDE12345' });
   assert.doesNotThrow(() => provider.getToken());
 });
 ```
@@ -893,7 +893,7 @@ function fakeConnectReturning({ status, responseBody = '' }) {
 
 test('send() posts to the production APNs host for a production token', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -905,7 +905,7 @@ test('send() posts to the production APNs host for a production token', async ()
 
 test('send() posts to the sandbox APNs host for a sandbox token', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({ token: 'devtoken123', environment: 'sandbox', payload: { aps: {} } });
 
@@ -914,7 +914,7 @@ test('send() posts to the sandbox APNs host for a sandbox token', async () => {
 
 test('send() sets the required headers', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider('jwt-abc'), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider('jwt-abc'), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -922,7 +922,7 @@ test('send() sets the required headers', async () => {
   assert.equal(headers[':method'], 'POST');
   assert.equal(headers[':path'], '/3/device/devtoken123');
   assert.equal(headers['apns-push-type'], 'liveactivity');
-  assert.equal(headers['apns-topic'], 'com.victormanuel.NozzleCast.push-type.liveactivity');
+  assert.equal(headers['apns-topic'], 'com.example.NozzleCast.push-type.liveactivity');
   assert.equal(headers['apns-priority'], '10');
   assert.equal(headers['authorization'], 'bearer jwt-abc');
   assert.equal(headers['content-type'], 'application/json');
@@ -930,7 +930,7 @@ test('send() sets the required headers', async () => {
 
 test('send() marks a 400 BadDeviceToken response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 400, responseBody: '{"reason":"BadDeviceToken"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -941,7 +941,7 @@ test('send() marks a 400 BadDeviceToken response for removal', async () => {
 
 test('send() marks a 410 Unregistered response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 410, responseBody: '{"reason":"Unregistered"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -950,7 +950,7 @@ test('send() marks a 410 Unregistered response for removal', async () => {
 
 test('send() does not mark a 500 response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 500, responseBody: '{"reason":"InternalServerError"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -1338,8 +1338,8 @@ test('NtfyWatcher delivers parsed "message" events to onMessage', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: (msg) => received.push(msg),
     fetchImpl,
@@ -1360,8 +1360,8 @@ test('NtfyWatcher ignores non-"message" events', async () => {
   const fetchImpl = async () => fakeStreamResponse([chunk]);
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: (msg) => received.push(msg),
     fetchImpl,
@@ -1384,8 +1384,8 @@ test('NtfyWatcher reconnects after the stream ends', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -1409,8 +1409,8 @@ test('NtfyWatcher sends the auth token as a Bearer header', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -1421,7 +1421,7 @@ test('NtfyWatcher sends the auth token as a Bearer header', async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   watcher.stop();
 
-  assert.equal(capturedUrl, 'https://ntfy.townsville.cc/townsville-3dprinter/sse');
+  assert.equal(capturedUrl, 'https://ntfy.example.com/3dprinter-alerts/sse');
   assert.equal(capturedHeaders.Authorization, 'Bearer tk_test');
 });
 ```
@@ -1675,14 +1675,14 @@ services:
     ports:
       - "3000:3000"
     environment:
-      NTFY_SERVER: "https://ntfy.townsville.cc"
-      NTFY_TOPIC: "townsville-3dprinter"
+      NTFY_SERVER: "https://ntfy.example.com"
+      NTFY_TOPIC: "3dprinter-alerts"
       NTFY_AUTH_TOKEN: "${NTFY_AUTH_TOKEN}"
       RELAY_AUTH_SECRET: "${RELAY_AUTH_SECRET}"
       APNS_KEY_PATH: "/secrets/AuthKey.p8"
       APNS_KEY_ID: "${APNS_KEY_ID}"
-      APNS_TEAM_ID: "89863526TH"
-      APNS_BUNDLE_ID: "com.victormanuel.NozzleCast"
+      APNS_TEAM_ID: "ABCDE12345"
+      APNS_BUNDLE_ID: "com.example.NozzleCast"
     volumes:
       - ./data:/data
       - ./secrets/AuthKey.p8:/secrets/AuthKey.p8:ro
@@ -1764,7 +1764,7 @@ Run:
 ```bash
 NTFY_SERVER=https://example.invalid NTFY_TOPIC=test NTFY_AUTH_TOKEN=x \
   RELAY_AUTH_SECRET=x APNS_KEY_PATH=/dev/null APNS_KEY_ID=x APNS_TEAM_ID=x \
-  APNS_BUNDLE_ID=com.victormanuel.NozzleCast PORT=3999 \
+  APNS_BUNDLE_ID=com.example.NozzleCast PORT=3999 \
   node src/index.js
 ```
 

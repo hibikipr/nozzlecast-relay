@@ -1,7 +1,7 @@
 # Live Activity issue badge (Bambuddy-style severity + count)
 
 Follow-up to the HMS-error false positive (`e754b3d` disabled the naive "Error" update entirely).
-Victor wants a proper badge instead — colored by severity, with a count, the same idea as
+The ask is for a proper badge instead — colored by severity, with a count, the same idea as
 Bambuddy's own printer-card badge — rather than either "always say Error" (wrong, see the
 0x10007 incident) or "never show anything" (current state).
 

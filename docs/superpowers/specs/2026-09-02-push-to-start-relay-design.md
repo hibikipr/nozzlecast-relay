@@ -63,7 +63,7 @@ Single Node.js service (`nozzlecast-relay`), one process, four internal pieces:
    pipeline's own limitation.
 
    **Post-implementation update (2026-09-02):** `NTFY_SERVER` points at the ntfy container's
-   internal Docker address (`http://ntfy:80`), not the public `https://ntfy.townsville.cc`
+   internal Docker address (`http://ntfy:80`), not the public `https://ntfy.example.com`
    hostname. The public hostname is proxied through this homelab's Nginx Proxy Manager, which
    buffers/stalls SSE streams by default (`proxy_buffering`) — confirmed directly: a request
    through NPM never delivered even ntfy's own immediate `open` handshake message, while the same
@@ -213,7 +213,7 @@ specifically to deliver that *specific activity's own* push token, via
    `https://api.push.apple.com/3/device/<token>` (or `api.sandbox.push.apple.com` per that
    token's stored `environment`) with:
    - `apns-push-type: liveactivity`
-   - `apns-topic: com.victormanuel.NozzleCast.push-type.liveactivity`
+   - `apns-topic: com.example.NozzleCast.push-type.liveactivity`
    - `apns-priority: 10`
    - `authorization: bearer <JWT>` — ES256, signed with the mounted `.p8` key, `kid` = Key ID,
      `iss` = Team ID, `iat` = now. Cached and reused for ~20 minutes per Apple's guidance rather
@@ -304,8 +304,8 @@ Environment variables:
 | `APNS_KEY_ID` | Production APNs auth key ID |
 | `APNS_SANDBOX_KEY_PATH` | Path to the mounted **sandbox/development** `.p8` auth key |
 | `APNS_SANDBOX_KEY_ID` | Sandbox APNs auth key ID |
-| `APNS_TEAM_ID` | Apple Developer Team ID (`89863526TH`), shared by both keys |
-| `APNS_BUNDLE_ID` | `com.victormanuel.NozzleCast` (push-to-start/update/end topic is derived by appending `.push-type.liveactivity`; the background-wake push uses the bare bundle ID as its topic instead) |
+| `APNS_TEAM_ID` | Apple Developer Team ID (`ABCDE12345`), shared by both keys |
+| `APNS_BUNDLE_ID` | `com.example.NozzleCast` (push-to-start/update/end topic is derived by appending `.push-type.liveactivity`; the background-wake push uses the bare bundle ID as its topic instead) |
 
 **Post-implementation update (2026-09-02):** the original design assumed one APNs auth key
 covers both environments, per Apple's general documentation. Confirmed against a real deploy that

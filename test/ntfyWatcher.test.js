@@ -69,8 +69,8 @@ test('NtfyWatcher delivers parsed "message" events to onMessage', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: (msg) => received.push(msg),
     fetchImpl,
@@ -91,8 +91,8 @@ test('NtfyWatcher ignores non-"message" events', async () => {
   const fetchImpl = async () => fakeStreamResponse([chunk]);
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: (msg) => received.push(msg),
     fetchImpl,
@@ -115,8 +115,8 @@ test('NtfyWatcher reconnects after the stream ends', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -140,8 +140,8 @@ test('NtfyWatcher sends the auth token as a Bearer header', async () => {
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -152,7 +152,7 @@ test('NtfyWatcher sends the auth token as a Bearer header', async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   watcher.stop();
 
-  assert.equal(capturedUrl, 'https://ntfy.townsville.cc/townsville-3dprinter/sse');
+  assert.equal(capturedUrl, 'https://ntfy.example.com/3dprinter-alerts/sse');
   assert.equal(capturedHeaders.Authorization, 'Bearer tk_test');
 });
 
@@ -164,8 +164,8 @@ test('NtfyWatcher aborts the in-flight connection when stop() is called', async 
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -187,8 +187,8 @@ test('NtfyWatcher clears the pending backoff timer on stop() so shutdown is prom
   const fetchImpl = async () => fakeStreamResponse([]); // stream ends immediately, every time
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,
@@ -224,8 +224,8 @@ test('NtfyWatcher does not reset backoff after a non-ok HTTP response', async ()
   };
 
   const watcher = new NtfyWatcher({
-    server: 'https://ntfy.townsville.cc',
-    topic: 'townsville-3dprinter',
+    server: 'https://ntfy.example.com',
+    topic: '3dprinter-alerts',
     authToken: 'tk_test',
     onMessage: () => {},
     fetchImpl,

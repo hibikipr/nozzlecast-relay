@@ -19,7 +19,7 @@ test('getToken returns a JWT with the documented ES256 header and claims', () =>
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -30,7 +30,7 @@ test('getToken returns a JWT with the documented ES256 header and claims', () =>
   assert.equal(decodedHeader.kid, 'KEYID123');
 
   const verified = jwt.verify(token, publicKey, { algorithms: ['ES256'] });
-  assert.equal(verified.iss, '89863526TH');
+  assert.equal(verified.iss, 'ABCDE12345');
   assert.equal(verified.iat, Math.floor(currentTime / 1000));
 });
 
@@ -40,7 +40,7 @@ test('getToken reuses the cached token within the 20-minute window', () => {
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -57,7 +57,7 @@ test('getToken regenerates once 20 minutes have elapsed', () => {
   const provider = new ApnsAuthProvider({
     keyPath: '/secrets/AuthKey_TEST.p8',
     keyId: 'KEYID123',
-    teamId: '89863526TH',
+    teamId: 'ABCDE12345',
     now: () => currentTime,
     readKeyFile: () => privateKey,
   });
@@ -77,6 +77,6 @@ test('readKeyFile defaults to reading keyPath from disk', () => {
   const keyPath = path.join(dir, 'AuthKey_TEST.p8');
   fs.writeFileSync(keyPath, privateKey);
 
-  const provider = new ApnsAuthProvider({ keyPath, keyId: 'KEYID123', teamId: '89863526TH' });
+  const provider = new ApnsAuthProvider({ keyPath, keyId: 'KEYID123', teamId: 'ABCDE12345' });
   assert.doesNotThrow(() => provider.getToken());
 });

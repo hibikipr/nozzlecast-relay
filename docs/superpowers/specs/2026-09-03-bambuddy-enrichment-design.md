@@ -66,8 +66,8 @@ supports scoped API keys (`backend/app/models/api_key.py`: `can_read_status`,
 `can_control_printer`, `can_queue`, etc. are independent booleans, and there's a built-in
 "Read-only access to printers, archives, and queue" role — `backend/app/core/permissions.py`).
 The relay only ever needs `PRINTERS_READ`/read-status; it should never hold a key that can
-control printers, touch the queue, or manage inventory. This is Victor's call to make when he
-issues the key, not something to default silently — flag it, don't just reuse the app's key.
+control printers, touch the queue, or manage inventory. This is the operator's call to make when
+issuing the key, not something to default silently — flag it, don't just reuse the app's key.
 
 Both required in `config.js`'s `REQUIRED_VARS`, documented in `README.md`'s config table and
 `.env.example`.

@@ -31,7 +31,7 @@ function fakeConnectReturning({ status, responseBody = '' }) {
 
 test('send() posts to the production APNs host for a production token', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -43,7 +43,7 @@ test('send() posts to the production APNs host for a production token', async ()
 
 test('send() posts to the sandbox APNs host for a sandbox token', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({ token: 'devtoken123', environment: 'sandbox', payload: { aps: {} } });
 
@@ -52,7 +52,7 @@ test('send() posts to the sandbox APNs host for a sandbox token', async () => {
 
 test('send() sets the required headers', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider('jwt-abc'), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider('jwt-abc'), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -60,7 +60,7 @@ test('send() sets the required headers', async () => {
   assert.equal(headers[':method'], 'POST');
   assert.equal(headers[':path'], '/3/device/devtoken123');
   assert.equal(headers['apns-push-type'], 'liveactivity');
-  assert.equal(headers['apns-topic'], 'com.victormanuel.NozzleCast.push-type.liveactivity');
+  assert.equal(headers['apns-topic'], 'com.example.NozzleCast.push-type.liveactivity');
   assert.equal(headers['apns-priority'], '10');
   assert.equal(headers['authorization'], 'bearer jwt-abc');
   assert.equal(headers['content-type'], 'application/json');
@@ -68,33 +68,33 @@ test('send() sets the required headers', async () => {
 
 test('send() uses the liveactivity push-type and configured topic by default', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
   assert.equal(calls[0].headers['apns-push-type'], 'liveactivity');
-  assert.equal(calls[0].headers['apns-topic'], 'com.victormanuel.NozzleCast.push-type.liveactivity');
+  assert.equal(calls[0].headers['apns-topic'], 'com.example.NozzleCast.push-type.liveactivity');
 });
 
 test('send() honors an explicit pushType/topic override for a plain background push', async () => {
   const { connect, calls } = fakeConnectReturning({ status: 200 });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await client.send({
     token: 'devtoken123',
     environment: 'production',
     payload: { aps: { 'content-available': 1 } },
     pushType: 'background',
-    topic: 'com.victormanuel.NozzleCast',
+    topic: 'com.example.NozzleCast',
   });
 
   assert.equal(calls[0].headers['apns-push-type'], 'background');
-  assert.equal(calls[0].headers['apns-topic'], 'com.victormanuel.NozzleCast');
+  assert.equal(calls[0].headers['apns-topic'], 'com.example.NozzleCast');
 });
 
 test('send() marks a 400 BadDeviceToken response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 400, responseBody: '{"reason":"BadDeviceToken"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -105,7 +105,7 @@ test('send() marks a 400 BadDeviceToken response for removal', async () => {
 
 test('send() marks a 410 Unregistered response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 410, responseBody: '{"reason":"Unregistered"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -114,7 +114,7 @@ test('send() marks a 410 Unregistered response for removal', async () => {
 
 test('send() does not mark a 500 response for removal', async () => {
   const { connect } = fakeConnectReturning({ status: 500, responseBody: '{"reason":"InternalServerError"}' });
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
 
@@ -146,7 +146,7 @@ test('send() rejects instead of crashing when the HTTP/2 session itself emits an
     };
     return session;
   };
-  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.victormanuel.NozzleCast.push-type.liveactivity', connect });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
 
   await assert.rejects(
     client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } }),
