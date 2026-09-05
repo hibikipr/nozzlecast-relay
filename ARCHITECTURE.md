@@ -515,12 +515,16 @@ H2C print landed in the same stack, and only the top card was visible without ex
 Long-press (or swipe) the stack to cycle through and see the test activity on its own, or run a
 replay when no real print is active for an unobstructed view.
 
-Two runs
+Three runs
 ship today: `sam-p1s-finish` (full happy-path RUNNING → FINISH climb to completion) and
 `sam-p1s-paused-stopped` (RUNNING → PAUSE → FAILED-with-no-HMS-issue, exercising the "Paused" and
-"Stopped" labels). `replayRuns.test.js` sanity-checks the run data itself (ordering, progress
-range) but there's no meaningful way to unit test the script's live-APNs behavior — same reasoning
-as every other real-device-only path in this document.
+"Stopped" labels), both reconstructed from relay logs with synthesized (plausible, not verbatim)
+layer/temp data, plus `sam-p1s-realistic-nonlinear-layers` — recorded live by polling Bambuddy's
+own status endpoint directly, so its progress/layer/remaining-time values are genuinely verbatim,
+including the real, non-linear relationship between progress% and layer count (see
+`replayRuns.js`'s own comment). `replayRuns.test.js` sanity-checks the run data itself (ordering,
+progress range) but there's no meaningful way to unit test the script's live-APNs behavior — same
+reasoning as every other real-device-only path in this document.
 
 ## Known limitations / open items
 

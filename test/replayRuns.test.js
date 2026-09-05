@@ -23,6 +23,12 @@ for (const [name, run] of Object.entries(RUNS)) {
         assert.ok(typeof step.progress === 'number' && step.progress >= 0 && step.progress <= 1, `progress in [0,1]: ${step.progress}`);
         assert.ok(typeof step.stateLabel === 'string' && step.stateLabel.length > 0, 'has a stateLabel');
         assert.ok(typeof step.remainingTimeMinutes === 'number' && step.remainingTimeMinutes >= 0, `remainingTimeMinutes >= 0: ${step.remainingTimeMinutes}`);
+        if (step.currentLayer !== undefined) {
+          assert.ok(
+            Number.isInteger(step.currentLayer) && step.currentLayer >= 0 && step.currentLayer <= run.totalLayers,
+            `currentLayer in [0, totalLayers]: ${step.currentLayer}`,
+          );
+        }
       }
     }
 

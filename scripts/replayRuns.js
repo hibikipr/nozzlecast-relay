@@ -1,11 +1,14 @@
-// Real print-lifecycle timings/progress reconstructed from nozzlecast-relay's own production
-// logs on 2026-09-03 (journalctl -t nozzlecast-relay) -- used by replay-run.js to send realistic
-// APNs push-to-start/update/end traffic for testing the Live Activity widget without waiting for
-// an actual print. `atSec` and `progress`/`stateLabel` are the real recorded values (offsets from
-// each run's own push-to-start). `currentLayer`/`nozzleTempC`/`bedTempC`/`remainingTimeMinutes`
-// are NOT verbatim historical values -- the relay's logs only ever recorded progress and state
-// transitions, never the full content-state -- they're synthesized to be plausible for the
-// printer/timing/progress that WAS logged, so the widget has something realistic to render.
+// Real print-lifecycle timings/progress used by replay-run.js to send realistic APNs
+// push-to-start/update/end traffic for testing the Live Activity widget without waiting for an
+// actual print. `atSec`/`progress`/`stateLabel` are always real recorded values (offsets from
+// each run's own push-to-start). The other content-state fields' fidelity varies per run -- see
+// each run's own comment: the first two below were reconstructed from relay logs on 2026-09-03,
+// which only ever recorded progress and state transitions (never the full content-state), so
+// `currentLayer`/`nozzleTempC`/`bedTempC`/`remainingTimeMinutes` there are synthesized to be
+// plausible, not verbatim. The third was recorded live on 2026-09-05 by polling Bambuddy's own
+// status endpoint directly, so its progress/currentLayer/remainingTimeMinutes ARE the real
+// values (temps are still a single representative fixed value, since the schema only carries
+// one per run).
 
 const RUNS = {
   // Reconstructed from real log timestamps 2026-09-03 14:22:21 (push-to-start) through 14:28:53
@@ -50,6 +53,35 @@ const RUNS = {
       { atSec: 249, kind: 'update', stateLabel: 'Paused', progress: 0.64, remainingTimeMinutes: 2 },
       { atSec: 284, kind: 'update', stateLabel: 'Paused', progress: 0.64, remainingTimeMinutes: 2 },
       { atSec: 315, kind: 'end', stateLabel: 'Stopped', progress: 0.64, remainingTimeMinutes: 0 },
+    ],
+  },
+
+  // Reconstructed from a real Sam P1S print recorded live 2026-09-05 by polling Bambuddy's own
+  // /status endpoint directly every 8s for the print's whole ~9.5min RUNNING -> FINISH lifecycle
+  // (not from relay logs -- update/end pushes never fire without a registered activity token, so
+  // there was nothing to reconstruct from there this time). Unlike the two runs above,
+  // progress/currentLayer/remainingTimeMinutes here are the REAL recorded values, not
+  // synthesized -- including the real, distinctly non-linear relationship between them: progress
+  // rockets to 65% while currentLayer stays 0 (a prime/skirt phase Bambuddy counts toward
+  // progress% but not layer_num), then currentLayer catches up fast once real per-layer printing
+  // starts. nozzleTempC/bedTempC are still a single representative fixed value (220/45,
+  // matching the mid-print steady state) since the run schema only carries one value for the
+  // whole run, not per-step -- real readings swung from ~60 to ~250 during heating.
+  'sam-p1s-realistic-nonlinear-layers': {
+    printerName: 'TEST Sam P1S Replay (real telemetry)',
+    jobName: 'No  AMS Version - 0.16mm layer, 2 walls, 15% infill',
+    totalLayers: 31,
+    nozzleTempC: 220,
+    bedTempC: 45,
+    steps: [
+      { atSec: 0, kind: 'start' },
+      { atSec: 82, kind: 'update', stateLabel: 'Printing', progress: 0.06, remainingTimeMinutes: 8, currentLayer: 0 },
+      { atSec: 98, kind: 'update', stateLabel: 'Printing', progress: 0.56, remainingTimeMinutes: 3, currentLayer: 0 },
+      { atSec: 383, kind: 'update', stateLabel: 'Printing', progress: 0.65, remainingTimeMinutes: 3, currentLayer: 0 },
+      { atSec: 416, kind: 'update', stateLabel: 'Printing', progress: 0.74, remainingTimeMinutes: 2, currentLayer: 2 },
+      { atSec: 481, kind: 'update', stateLabel: 'Printing', progress: 0.87, remainingTimeMinutes: 0, currentLayer: 20 },
+      { atSec: 530, kind: 'update', stateLabel: 'Printing', progress: 0.96, remainingTimeMinutes: 0, currentLayer: 31 },
+      { atSec: 570, kind: 'end', stateLabel: 'Complete', progress: 1, remainingTimeMinutes: 0, currentLayer: 31 },
     ],
   },
 };
