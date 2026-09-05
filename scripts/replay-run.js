@@ -229,7 +229,12 @@ async function main() {
       stateLabel: step.stateLabel,
       jobName: run.jobName,
       estimatedEndAt,
-      currentLayer: Math.round(step.progress * run.totalLayers),
+      // A run can supply real per-step currentLayer values directly (see replayRuns.js) --
+      // confirmed live 2026-09-05 that Bambuddy's layer_num does NOT scale linearly with
+      // progress% (a prime/skirt phase accounts for a large chunk of early progress% while
+      // layer_num stays 0), so the linear fallback below is only a plausible approximation for
+      // runs that never recorded real layer data.
+      currentLayer: step.currentLayer ?? Math.round(step.progress * run.totalLayers),
       totalLayers: run.totalLayers,
       nozzleTempC: run.nozzleTempC,
       bedTempC: run.bedTempC,
