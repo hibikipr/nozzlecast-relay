@@ -247,6 +247,27 @@ get a wake retry on every correction tick for the print's entire duration. Worth
 `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` if that proves too chatty against APNs in practice — no cap
 on retry count/duration has been added.
 
+## `/register-device` never called at all (2026-09-04/05)
+
+The wake-retry fix above assumes *some* device token is eventually registered to retry against.
+Confirmed live over two days and 7+ real prints plus a controlled synthetic replay test: it never
+was — `device-tokens.json` never had a single entry, across the original app build, a fix to a
+separate bug (`RelayConnectionSheet.save()` not re-arming activity-token discovery — see
+NozzleCast's own repo), a reverted build, and a fresh Xcode debug build. Every push-to-start
+still succeeded (confirmed correct `attributes-type`, correct cert/environment routing), but
+`/register-activity` never landed once, and the app only ever picked up a push-to-start-created
+activity when manually foregrounded.
+
+Root cause (found app-side, 2026-09-05): Firebase's `Messaging` delegate proxy was swallowing
+`application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` before the app's own handler
+ever saw it, so `handleAPNsToken`/`registerDeviceToken` — and therefore the POST to
+`/register-device` — never ran. This explains both symptoms with one root cause: no device token
+meant the background wake (this section) had nowhere to send, so the only path left for the app to
+ever notice a push-to-start-created activity was a foreground launch triggering its own local
+sync independently of any relay push. `/register-device`'s own success log line (see HTTP API
+above) was added alongside this fix, mirroring `/register-activity`'s, for the same reason: no way
+to see arrival without it.
+
 ## Enrichment (Bambuddy telemetry)
 
 `bambuddyEnrichment.js`'s `enrichmentFromStatus(status)` maps a Bambuddy `/status` DTO onto
