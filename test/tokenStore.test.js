@@ -67,6 +67,25 @@ test('load() on a file containing invalid JSON logs a warning and starts with an
   assert.deepEqual(store.list(), []);
 });
 
+test('concurrent upsert() calls do not crash and all tokens end up persisted', async () => {
+  // Reproduces the crash confirmed live 2026-09-06: a burst of rapid /register-device retries
+  // fired concurrent upsert() calls, racing on the shared save() .tmp file and crashing the
+  // whole process with an unhandled ENOENT on the second fs.rename.
+  const filePath = await tempFilePath();
+  const store = new TokenStore(filePath);
+  await store.load();
+
+  await assert.doesNotReject(Promise.all([
+    store.upsert({ token: 'abc123', environment: 'sandbox' }),
+    store.upsert({ token: 'def456', environment: 'production' }),
+    store.upsert({ token: 'ghi789', environment: 'sandbox' }),
+  ]));
+
+  assert.equal(store.list().length, 3);
+  const onDisk = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  assert.equal(onDisk.length, 3);
+});
+
 test('load() reads back tokens written by a previous store instance', async () => {
   const filePath = await tempFilePath();
   const first = new TokenStore(filePath);

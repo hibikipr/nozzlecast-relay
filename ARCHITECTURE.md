@@ -72,7 +72,16 @@ Three separate JSON files under `/data` (mounted volume, survives restarts/redep
   carry ActivityKit's entire content-state (not a diff), so the original `startedAt` has to survive
   independently of whenever the token itself shows up.
 
-All three are loaded at startup and rewritten on every register/deregister/prune.
+All three are loaded at startup and rewritten on every register/deregister/prune, via the shared
+`AtomicJsonFile` helper (`atomicJsonFile.js`): write to a `.tmp` path, then rename over the real
+file. Writes to the same file are serialized through a promise queue — **confirmed live
+2026-09-06 that this queuing is load-bearing, not defensive**: a burst of rapid `/register-device`
+retries fired concurrent `upsert()` calls, both writing the same fixed `.tmp` path, and whichever
+`fs.rename` ran second threw `ENOENT` (the first rename had already consumed it) as an unhandled
+rejection that crashed the whole process. Docker's `restart: unless-stopped` brought it back
+automatically, but the underlying race was real. Each queued write reads its store's *current*
+in-memory state at its own turn (not a snapshot from when it was queued), so serializing never
+drops an update — it just guarantees they land one at a time.
 
 ## HTTP API
 

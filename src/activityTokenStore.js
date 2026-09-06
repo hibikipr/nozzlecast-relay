@@ -1,5 +1,5 @@
 const fs = require('node:fs/promises');
-const path = require('node:path');
+const { AtomicJsonFile } = require('./atomicJsonFile');
 
 // One entry per printer, not per token: a printer only ever has one active print/activity at a
 // time, and each new print gets a brand new ActivityKit per-activity push token (registered by
@@ -13,6 +13,7 @@ class ActivityTokenStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.entries = new Map(); // printerID -> entry
+    this._file = new AtomicJsonFile(filePath);
   }
 
   async load() {
@@ -105,11 +106,8 @@ class ActivityTokenStore {
     return Array.from(this.entries.values());
   }
 
-  async save() {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
-    await fs.writeFile(tmpPath, JSON.stringify(this.list(), null, 2), 'utf8');
-    await fs.rename(tmpPath, this.filePath);
+  save() {
+    return this._file.write(() => this.list());
   }
 }
 

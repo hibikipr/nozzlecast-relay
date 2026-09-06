@@ -1,10 +1,11 @@
 const fs = require('node:fs/promises');
-const path = require('node:path');
+const { AtomicJsonFile } = require('./atomicJsonFile');
 
 class TokenStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.tokens = new Map();
+    this._file = new AtomicJsonFile(filePath);
   }
 
   async load() {
@@ -45,11 +46,8 @@ class TokenStore {
     return Array.from(this.tokens.values());
   }
 
-  async save() {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.tmp`;
-    await fs.writeFile(tmpPath, JSON.stringify(this.list(), null, 2), 'utf8');
-    await fs.rename(tmpPath, this.filePath);
+  save() {
+    return this._file.write(() => this.list());
   }
 }
 
