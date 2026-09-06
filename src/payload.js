@@ -82,16 +82,19 @@ function buildPushToStartPayload({
       'content-state': buildContentState({
         startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
       }),
-      // Must be the module-qualified Swift type name, not the bare struct name: ActivityKit
-      // identifies an ActivityAttributes type by this string at the OS level, and
-      // PrintActivityAttributes now lives in the app's NozzleCastShared package (moved there so
-      // the app/widget/NSE targets share one compiled definition), not the app's own module. APNs
-      // doesn't validate this string, so a mismatch was always accepted (200) and always silently
-      // dropped on-device -- confirmed live: push-to-start never once produced a visible Lock
-      // Screen activity across 4 consecutive test prints, while the app's own local
-      // Activity.request(...) call (PrintLiveActivityManager.sync(), which resolves the Swift
-      // type at compile time and never touches this string) worked every time.
-      'attributes-type': 'NozzleCastShared.PrintActivityAttributes',
+      // The BARE Swift struct name, never module-qualified -- even though
+      // PrintActivityAttributes lives in the NozzleCastShared package rather than in the app's
+      // own module. Apple's own documented example uses "AdventureAttributes" for a type that
+      // likewise isn't in a module of that name, and every provider that documents the raw
+      // payload (OneSignal et al) says the same thing: this must match the struct name exactly.
+      //
+      // A previous version sent 'NozzleCastShared.PrintActivityAttributes' on the theory that
+      // ActivityKit resolves this as a fully-qualified type name. That was a hypothesis, never
+      // verified against a device, and this is the revert. APNs does not validate this field at
+      // all, so a wrong value is accepted with a 200 and dropped silently on-device -- the only
+      // place the failure is visible is the device's own liveactivitiesd log, which is exactly
+      // why a wrong guess here can survive so many test prints.
+      'attributes-type': 'PrintActivityAttributes',
       attributes: { printerID, printerName },
       alert: { title: 'Print Started', body: `${printerName} is printing` },
     },

@@ -9,6 +9,16 @@ class ApnsClient {
     this.connect = connect;
   }
 
+  // APNs constrains apns-priority by push type: a `background` push (apns-push-type: background,
+  // i.e. a content-available wake) MUST be priority 5 -- 10 is rejected outright with a 400
+  // BadPriority, it is not merely downgraded. Every other push type here (liveactivity) wants 10
+  // so it is delivered immediately. This was previously hardcoded to '10' for every send, which
+  // silently broke every background wake push the moment /register-device started working and
+  // there was finally a device token to send one to.
+  static priorityFor(pushType) {
+    return pushType === 'background' ? '5' : '10';
+  }
+
   async send({ token, environment, payload, pushType = 'liveactivity', topic = this.topic }) {
     const origin = environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
@@ -52,7 +62,7 @@ class ApnsClient {
         ':path': `/3/device/${token}`,
         'apns-push-type': pushType,
         'apns-topic': topic,
-        'apns-priority': '10',
+        'apns-priority': ApnsClient.priorityFor(pushType),
         authorization: `bearer ${this.authProvider.getToken()}`,
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),

@@ -90,6 +90,18 @@ test('send() honors an explicit pushType/topic override for a plain background p
 
   assert.equal(calls[0].headers['apns-push-type'], 'background');
   assert.equal(calls[0].headers['apns-topic'], 'com.example.NozzleCast');
+  // APNs rejects a background push sent at priority 10 outright (400 BadPriority) -- 5 is the
+  // only value it accepts for this push type.
+  assert.equal(calls[0].headers['apns-priority'], '5');
+});
+
+test('send() keeps priority 10 for a liveactivity push', async () => {
+  const { connect, calls } = fakeConnectReturning({ status: 200 });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+
+  await client.send({ token: 'abc123', environment: 'production', payload: { aps: {} } });
+
+  assert.equal(calls[0].headers['apns-priority'], '10');
 });
 
 test('send() marks a 400 BadDeviceToken response for removal', async () => {
