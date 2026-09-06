@@ -46,6 +46,7 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
       return res.status(400).json({ error: 'invalid body: require token and environment (sandbox|production)' });
     }
     await deviceTokenStore.upsert({ token, environment });
+    console.log(`Registered device token (${environment}) -- background wake now has somewhere to send`);
     res.status(200).json({ ok: true });
   });
 
