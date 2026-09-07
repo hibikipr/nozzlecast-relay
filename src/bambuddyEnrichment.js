@@ -69,7 +69,24 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
     nozzleTempC: roundedOrNull(status.temperatures?.nozzle),
     bedTempC: roundedOrNull(status.temperatures?.bed),
     estimatedEndAt: remainingTimeMinutes !== null ? new Date(now.getTime() + remainingTimeMinutes * 60 * 1000) : null,
+    // Bambuddy's own server-resolved name for its internal `stg_cur` stage (e.g. "Purifying the
+    // chamber air", "Heating chamber") -- detail beyond the coarse Printing/Paused/Complete
+    // stateLabel this relay otherwise sends. In particular this is what actually explains the
+    // window after a print reaches 100% but before the printer's gcode_state leaves RUNNING,
+    // where it's auto-running post-print chamber purification -- invisible from progress/
+    // stateLabel alone. Filtered by filterStageDetail() at the call site (this function has no
+    // stateLabel to compare against), not here.
+    stageDetail: status.stg_cur_name ?? null,
   };
 }
 
-module.exports = { enrichmentFromStatus, isRemainingTimeTrustworthy };
+// Suppresses stageDetail when it would just repeat the stateLabel already being sent alongside
+// it (most commonly stage 0's "Printing" while stateLabel is already "Printing") -- callers pass
+// their own stateLabel since enrichmentFromStatus doesn't have one to compare against. Mirrors
+// NozzleCast's own PrintLiveActivityManager.stageDetail() filter so both surfaces agree on what
+// counts as detail worth showing versus a redundant echo.
+function filterStageDetail(stageDetail, stateLabel) {
+  return stageDetail && stageDetail !== stateLabel ? stageDetail : null;
+}
+
+module.exports = { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail };

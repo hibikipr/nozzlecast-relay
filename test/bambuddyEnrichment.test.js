@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { enrichmentFromStatus, isRemainingTimeTrustworthy } = require('../src/bambuddyEnrichment');
+const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('../src/bambuddyEnrichment');
 
 test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real snake_case keys', () => {
   const now = new Date('2026-09-03T12:00:00.000Z');
@@ -11,6 +11,7 @@ test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real s
     total_layers: 250,
     remaining_time: 10, // minutes
     temperatures: { nozzle: 220.5, bed: 60 },
+    stg_cur_name: 'Purifying the chamber air',
   };
 
   const enrichment = enrichmentFromStatus(status, { now });
@@ -22,6 +23,25 @@ test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real s
   assert.equal(enrichment.nozzleTempC, 221); // rounded from 220.5 -- see the Int? rounding test below
   assert.equal(enrichment.bedTempC, 60);
   assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 10 * 60 * 1000);
+  assert.equal(enrichment.stageDetail, 'Purifying the chamber air');
+});
+
+test('enrichmentFromStatus maps stageDetail to null when Bambuddy has no derived stage name', () => {
+  assert.equal(enrichmentFromStatus({ progress: 0 }).stageDetail, null);
+});
+
+test('filterStageDetail suppresses a stage name that just repeats the stateLabel', () => {
+  // The common case: stage 0 resolves to "Printing", which is already what stateLabel says --
+  // showing it again as a subtitle would be a pure echo, not real detail.
+  assert.equal(filterStageDetail('Printing', 'Printing'), null);
+});
+
+test('filterStageDetail passes through a stage name that says something stateLabel does not', () => {
+  assert.equal(filterStageDetail('Purifying the chamber air', 'Printing'), 'Purifying the chamber air');
+});
+
+test('filterStageDetail passes through null unchanged', () => {
+  assert.equal(filterStageDetail(null, 'Printing'), null);
 });
 
 test('enrichmentFromStatus does NOT read camelCase keys -- Bambuddy never sends them', () => {

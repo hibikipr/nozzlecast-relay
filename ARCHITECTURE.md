@@ -321,6 +321,7 @@ an earlier version assumed):
 | `estimatedEndAt` | `now + status.remaining_time minutes` (see below) | |
 | `coverImage` | `GET /cover?token=...`, downscaled, cached per print | See Images below. |
 | `liveSnapshot` | `GET /camera/snapshot?token=...`, downscaled, fetched fresh every update | See Images below. |
+| `stageDetail` | `status.stg_cur_name`, via `filterStageDetail(stageDetail, stateLabel)` | Bambuddy's own server-resolved name for its internal `stg_cur` stage (e.g. "Purifying the chamber air", "Heating chamber") — detail beyond the coarse Printing/Paused/Complete `stateLabel`. In particular this is what's actually happening during the window after a print reaches 100% but before `gcode_state` leaves RUNNING to run post-print chamber purification, which is otherwise invisible from `progress`/`stateLabel` alone. `filterStageDetail` suppresses it when it would just echo `stateLabel` (most commonly stage 0's "Printing" while `stateLabel` is already "Printing") — see `bambuddyEnrichment.js`. |
 
 ### `remaining_time` units and trust
 
@@ -440,7 +441,8 @@ those are only meaningful when creating an activity):
   "coverImage": null,
   "liveSnapshot": null,
   "issueSeverity": null,
-  "issueCount": null
+  "issueCount": null,
+  "stageDetail": null
 }
 ```
 

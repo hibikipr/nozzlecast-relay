@@ -18,7 +18,7 @@ const { ApnsAuthProvider } = require('./apnsAuth');
 const { ApnsClient } = require('./apnsClient');
 const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
-const { enrichmentFromStatus, isRemainingTimeTrustworthy } = require('./bambuddyEnrichment');
+const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('./bambuddyEnrichment');
 const { downscaleImage } = require('./imageDownscale');
 const { createServer } = require('./server');
 const { NtfyWatcher } = require('./ntfyWatcher');
@@ -299,6 +299,10 @@ async function main() {
       coverImage: enrichment?.coverImage ?? null,
       issueSeverity,
       issueCount,
+      // 'Printing' is push-to-start's implicit stateLabel (buildContentState's own default,
+      // not passed explicitly here) -- filtered against that literal so a print starting
+      // already mid-stage-0 doesn't show a redundant "Printing" caption under "Printing".
+      stageDetail: filterStageDetail(enrichment?.stageDetail, 'Printing'),
     });
     console.log(`Push-to-start payload for printer "${name}": ${JSON.stringify(redactImagesForLogging(payload))}`);
     for (const entry of tokenStore.list()) {
@@ -383,6 +387,7 @@ async function main() {
       liveSnapshot: enrichment?.liveSnapshot ?? null,
       issueSeverity,
       issueCount,
+      stageDetail: filterStageDetail(enrichment?.stageDetail, stateLabel),
     });
     try {
       const client = apnsClients[activity.environment] || apnsClients.production;
