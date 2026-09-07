@@ -29,7 +29,8 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
 
   assert.deepEqual(Object.keys(state).sort(), [
     'bedTempC', 'coverImage', 'currentLayer', 'estimatedEndAt', 'issueCount', 'issueSeverity',
-    'jobName', 'liveSnapshot', 'nozzleTempC', 'progress', 'startedAt', 'stateLabel', 'totalLayers',
+    'jobName', 'liveSnapshot', 'nozzleTempC', 'progress', 'stageDetail', 'startedAt', 'stateLabel',
+    'totalLayers',
   ].sort());
   assert.equal(state.progress, 0);
   assert.equal(state.stateLabel, 'Printing');
@@ -45,6 +46,7 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   assert.equal(state.liveSnapshot, null);
   assert.equal(state.issueSeverity, null);
   assert.equal(state.issueCount, null);
+  assert.equal(state.stageDetail, null);
 });
 
 test('buildPushToStartPayload sends startedAt as a Foundation-reference-date number, not Unix epoch or a date string', () => {
@@ -252,4 +254,24 @@ test('buildPushToStartPayload passes issueSeverity/issueCount through unchanged'
 
   assert.equal(payload.aps['content-state'].issueSeverity, 'error');
   assert.equal(payload.aps['content-state'].issueCount, 1);
+});
+
+test('buildActivityStatePayload passes stageDetail through unchanged', () => {
+  const payload = buildActivityStatePayload({
+    event: 'update',
+    startedAt: new Date('2026-09-02T13:23:34.000Z'),
+    stageDetail: 'Purifying the chamber air',
+  });
+
+  assert.equal(payload.aps['content-state'].stageDetail, 'Purifying the chamber air');
+});
+
+test('buildPushToStartPayload passes stageDetail through unchanged', () => {
+  const payload = buildPushToStartPayload({
+    printerID: 'vich2c',
+    printerName: 'Vic H2C',
+    stageDetail: 'Heating chamber',
+  });
+
+  assert.equal(payload.aps['content-state'].stageDetail, 'Heating chamber');
 });

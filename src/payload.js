@@ -42,6 +42,7 @@ function buildContentState({
   liveSnapshot = null,
   issueSeverity = null,
   issueCount = null,
+  stageDetail = null,
 }) {
   return {
     progress,
@@ -57,6 +58,7 @@ function buildContentState({
     liveSnapshot,
     issueSeverity,
     issueCount,
+    stageDetail,
   };
 }
 
@@ -74,13 +76,14 @@ function buildPushToStartPayload({
   liveSnapshot = null,
   issueSeverity = null,
   issueCount = null,
+  stageDetail = null,
 }) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
       'content-state': buildContentState({
-        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
+        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
       }),
       // The BARE Swift struct name, never module-qualified -- even though
       // PrintActivityAttributes lives in the NozzleCastShared package rather than in the app's
@@ -123,6 +126,7 @@ function buildActivityStatePayload({
   liveSnapshot = null,
   issueSeverity = null,
   issueCount = null,
+  stageDetail = null,
   now = new Date(),
 }) {
   return {
@@ -130,7 +134,7 @@ function buildActivityStatePayload({
       timestamp: Math.floor(now.getTime() / 1000),
       event,
       'content-state': buildContentState({
-        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount,
+        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
       }),
       // dismissal-date is a TOP-LEVEL aps key, interpreted directly by APNs/the system -- unlike
       // content-state's own Date fields, it is NOT Codable-decoded by the app's Swift struct, so
