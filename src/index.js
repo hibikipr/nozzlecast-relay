@@ -305,7 +305,7 @@ async function main() {
       // already mid-stage-0 doesn't show a redundant "Printing" caption under "Printing".
       stageDetail: filterStageDetail(enrichment?.stageDetail, 'Printing'),
     });
-    console.log(`Push-to-start payload for printer "${name}": ${JSON.stringify(redactImagesForLogging(payload))}`);
+    console.log(`Push-to-start payload for printer "${name}": ${Buffer.byteLength(JSON.stringify(payload))} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
     for (const entry of tokenStore.list()) {
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
@@ -391,6 +391,14 @@ async function main() {
       issueCount,
       stageDetail: filterStageDetail(enrichment?.stageDetail, stateLabel),
     });
+    // ActivityKit's content-state has a real, silently-enforced byte budget (~4KB) -- a push
+    // over it isn't rejected by APNs (which never inspects content-state) and isn't reported
+    // back to us at all, it's just dropped on-device with no visible signal here. Logging the
+    // actual size on every send, rather than only when something looks wrong, is what makes it
+    // possible to correlate an on-device "activity didn't update" report against a specific
+    // push after the fact, instead of guessing from a synthetic worst case.
+    const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
+    console.log(`Activity ${event} payload for printer "${name}": ${payloadBytes} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
     try {
       const client = apnsClients[activity.environment] || apnsClients.production;
       const result = await client.send({ token: activity.token, environment: activity.environment, payload });
