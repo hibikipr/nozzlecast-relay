@@ -263,7 +263,7 @@ Confirmed live over two days and 7+ real prints plus a controlled synthetic repl
 was — `device-tokens.json` never had a single entry, across the original app build, a fix to a
 separate bug (`RelayConnectionSheet.save()` not re-arming activity-token discovery — see
 NozzleCast's own repo), a reverted build, and a fresh Xcode debug build. Every push-to-start
-still succeeded (confirmed correct `attributes-type`, correct cert/environment routing), but
+was accepted by APNs (correct cert/environment routing), but
 `/register-activity` never landed once, and the app only ever picked up a push-to-start-created
 activity when manually foregrounded.
 
@@ -377,7 +377,7 @@ All three payload builders live in `payload.js`.
     "timestamp": "<unix seconds>",
     "event": "start",
     "content-state": { /* see below */ },
-    "attributes-type": "NozzleCastShared.PrintActivityAttributes",
+    "attributes-type": "PrintActivityAttributes",
     "attributes": { "printerID": "<normalizedID>", "printerName": "<parsed name>" },
     "alert": { "title": "Print Started", "body": "<printerName> is printing" }
   }
@@ -388,11 +388,17 @@ The full push-to-start payload is logged verbatim (`Push-to-start payload for pr
 before sending, with `coverImage`/`liveSnapshot` replaced by a `<base64, N chars>` marker to keep
 log lines readable — see `redactImagesForLogging` in `index.js`. This exists specifically because
 APNs does not validate `attributes-type` (or `attributes`) at all: a mismatch against the app's
-actual Swift type is accepted (200) and silently dropped on-device with zero relay-visible signal,
-confirmed live 2026-09-04 when a bare `PrintActivityAttributes` (missing its `NozzleCastShared.`
-module qualification) passed every relay-side check yet never produced a visible Live Activity.
+actual Swift type is accepted (200) and silently dropped on-device with zero relay-visible signal.
 Logging the exact bytes sent is the only way to catch a future mismatch here by inspection instead
 of by trial and error.
+
+`attributes-type` is the **bare** struct name, never module-qualified, even though
+`PrintActivityAttributes` lives in the app's `NozzleCastShared` package rather than in the app's
+own module. Apple's own documented example uses `"AdventureAttributes"` for a type that likewise
+isn't in a module of that name. Between 2026-09-04 and 2026-09-06 this was changed to
+`"NozzleCastShared.PrintActivityAttributes"` on the theory that ActivityKit resolves a
+fully-qualified type name; that was a hypothesis, was never verified on a device, and push-to-start
+kept failing after it shipped. Reverted 2026-09-06.
 
 **Activity update/end** (`aps.event: "update" | "end"`, no `attributes-type`/`attributes`/`alert` —
 those are only meaningful when creating an activity):
@@ -431,6 +437,14 @@ directly rather than the `.push-type.liveactivity` topic):
 ```json
 { "aps": { "content-available": 1 } }
 ```
+
+This one push type also needs a different `apns-priority`: APNs requires **5** for
+`apns-push-type: background` and rejects priority 10 outright with a 400 `BadPriority` — it does
+not merely downgrade it. `ApnsClient.priorityFor(pushType)` picks 5 for `background` and 10 for
+everything else. Before 2026-09-06 the header was hardcoded to `'10'` for every send, which meant
+every background wake was rejected; that stayed invisible for as long as `device-tokens.json` was
+empty (see "/register-device never called at all" above) because no wake was ever actually
+attempted.
 
 ### Date encoding — two different conventions, deliberately
 
