@@ -318,9 +318,9 @@ async function main() {
       }
     }
 
-    // Also wake the app itself in the background: a push-to-start-created activity is invisible
-    // to `Activity<PrintActivityAttributes>.activities` everywhere (app, NSE, widget) until the
-    // app runs its own `PrintLiveActivityManager.sync` at least once — see buildBackgroundWakePayload.
+    // Also wake the app itself in the background so it refreshes its own printer state without
+    // needing a foreground launch — see buildBackgroundWakePayload for why this is no longer
+    // believed to be load-bearing for activity visibility.
     await sendBackgroundWake(name);
   };
 

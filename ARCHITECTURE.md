@@ -15,11 +15,22 @@ common case) would otherwise get no Live Activity until the app is next opened.
 The only way to start a Live Activity purely from a push, with no app code running, is
 ActivityKit's **push-to-start**: the app registers a push-to-start token, and a server sends a
 specially-shaped APNs request. This relay is that server. Its scope grew past just *starting* the
-activity: confirmed across extensive live testing that `Activity<PrintActivityAttributes>
-.activities`/`.activityUpdates` cannot be relied on from *any* device-side code (foreground, NSE,
-or background-woken app) to find and update/end a push-to-start-created activity. So the relay
-also owns every progress/pause/error/end update for the activity's entire lifetime, pushed
-directly to that activity's own per-activity APNs token — not just the initial start.
+activity: the relay also owns every progress/pause/error/end update for the activity's entire
+lifetime, pushed directly to that activity's own per-activity APNs token — not just the initial
+start. A path that needs no device-side code running at all is strictly more robust for something
+that has to keep working with the phone locked.
+
+> **Retracted claim.** This section previously justified that scope by asserting, from "extensive
+> live testing," that `Activity<PrintActivityAttributes>.activities`/`.activityUpdates` cannot be
+> relied on from *any* device-side code to find a push-to-start-created activity. The observation
+> was real; the explanation was wrong. Push-to-start was silently broken throughout that testing —
+> this relay was sending a module-qualified `attributes-type`, which APNs accepts with a 200 and
+> iOS drops on-device with no error anywhere but `liveactivitiesd`'s log — so **no activity was
+> ever being created** and there was nothing for device-side code to find. Confirmed 2026-09-07,
+> with `attributes-type` corrected to the bare `PrintActivityAttributes`: the app discovered the
+> activity via `.activityUpdates` and `/register-activity` landed ~3.5s after print start. The
+> design above is unchanged and still correct — only its stated justification was wrong. Do not
+> reason from "device-side discovery is impossible."
 
 ## Non-goals
 
@@ -203,12 +214,13 @@ entirely, not just disabled, superseded by the debounced/severity-filtered badge
 1. **Push-to-start token**: app observes `Activity<PrintActivityAttributes>.pushToStartTokenUpdates`
    and POSTs to `/register`.
 2. **Device token** (background wake): app POSTs its plain APNs device token to `/register-device`.
-   Even with push-to-start firing correctly, a push-to-start-created activity never populated
-   `Activity<PrintActivityAttributes>.activities` in any process — app, NSE, or widget — until the
-   app ran its own `PrintLiveActivityManager.sync` at least once (confirmed against a real device:
-   the activity appeared and sat frozen through every subsequent push until manually foregrounded
-   once). The relay fires a `content-available` background push to every registered device token
-   alongside push-to-start to trigger that sync without the user opening the app.
+   The relay fires a `content-available` background push to every registered device token
+   alongside push-to-start, so the app runs `PrintLiveActivityManager.sync` without the user
+   opening it. This was originally introduced because a push-to-start-created activity appeared to
+   never populate `Activity<PrintActivityAttributes>.activities` in any process until that sync
+   ran — see the retracted claim at the top of this document for why that observation didn't mean
+   what it looked like. The wake is kept regardless: it is cheap, and it keeps the app's own view
+   of printer state fresh rather than relying on a foreground launch.
 3. **Per-activity token**: the app observes every activity's own `pushTokenUpdates` stream (the one
    thing Apple's docs guarantee the system wakes the app to deliver) and POSTs it to
    `/register-activity` with `{ token, printerID, environment }`. This is the token every
