@@ -62,9 +62,10 @@ const RUNS = {
   // there was nothing to reconstruct from there this time). Unlike the two runs above,
   // progress/currentLayer/remainingTimeMinutes here are the REAL recorded values, not
   // synthesized -- including the real, distinctly non-linear relationship between them: progress
-  // rockets to 65% while currentLayer stays 0 (a prime/skirt phase Bambuddy counts toward
-  // progress% but not layer_num), then currentLayer catches up fast once real per-layer printing
-  // starts. nozzleTempC/bedTempC are still a single representative fixed value (220/45,
+  // rockets to 65% while currentLayer stays 0 (Bambuddy counts the printer's own start
+  // routine/calibration -- bed leveling, flow calibration, etc. -- toward progress% before actual
+  // per-layer printing begins, per Victor), then currentLayer catches up fast once real per-layer
+  // printing starts. nozzleTempC/bedTempC are still a single representative fixed value (220/45,
   // matching the mid-print steady state) since the run schema only carries one value for the
   // whole run, not per-step -- real readings swung from ~60 to ~250 during heating.
   'sam-p1s-realistic-nonlinear-layers': {
@@ -92,9 +93,10 @@ const RUNS = {
   // and every update/end push landed -- the first fully clean start-to-finish lifecycle in the
   // whole investigation. progress/currentLayer/remainingTimeMinutes are the real recorded values,
   // same non-linear relationship as sam-p1s-realistic-nonlinear-layers above but more extreme:
-  // progress jumps from 6% to 67% in a single 15s poll while currentLayer stays 0 throughout (a
-  // long prime/skirt phase Bambuddy counts toward progress% but not layer_num), then currentLayer
-  // catches up fast (0 -> 31 in ~120s) once real per-layer printing starts. Also exercises a long
+  // progress jumps from 6% to 67% in a single 15s poll while currentLayer stays 0 throughout (the
+  // printer's own start routine/calibration -- bed leveling, flow calibration, etc. -- counts
+  // toward progress% but not layer_num, per Victor), then currentLayer catches up fast (0 -> 31 in
+  // ~120s) once real per-layer printing starts. Also exercises a long
   // dwell at progress=1/currentLayer=31 (~215s) before Bambuddy's state actually flips to FINISH --
   // the widget should hold at "almost done" rather than showing 100%-but-still-printing oddly.
   // nozzleTempC/bedTempC are a single representative fixed value (33/29, the values on the actual
