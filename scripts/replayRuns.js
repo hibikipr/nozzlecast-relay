@@ -84,6 +84,39 @@ const RUNS = {
       { atSec: 570, kind: 'end', stateLabel: 'Complete', progress: 1, remainingTimeMinutes: 0, currentLayer: 31 },
     ],
   },
+
+  // Recorded live 2026-09-07 by polling Bambuddy's own /status endpoint directly every 15s for a
+  // real Vic H2C print's whole RUNNING -> FINISH lifecycle (push-to-start 00:48:13 through Activity
+  // end sent 00:58:59, ~646s). This is the first run recorded after PR #11 (bare attributes-type +
+  // apns-priority 5 for background pushes): /register-activity succeeded 3.5s after push-to-start,
+  // and every update/end push landed -- the first fully clean start-to-finish lifecycle in the
+  // whole investigation. progress/currentLayer/remainingTimeMinutes are the real recorded values,
+  // same non-linear relationship as sam-p1s-realistic-nonlinear-layers above but more extreme:
+  // progress jumps from 6% to 67% in a single 15s poll while currentLayer stays 0 throughout (a
+  // long prime/skirt phase Bambuddy counts toward progress% but not layer_num), then currentLayer
+  // catches up fast (0 -> 31 in ~120s) once real per-layer printing starts. Also exercises a long
+  // dwell at progress=1/currentLayer=31 (~215s) before Bambuddy's state actually flips to FINISH --
+  // the widget should hold at "almost done" rather than showing 100%-but-still-printing oddly.
+  // nozzleTempC/bedTempC are a single representative fixed value (33/29, the values on the actual
+  // push-to-start payload for this run) since the run schema only carries one value for the whole
+  // run.
+  'vic-h2c-realistic-full-completion': {
+    printerName: 'TEST Vic H2C Replay (real telemetry)',
+    jobName: 'No  AMS Version - 0.16mm layer, 2 walls, 15% infill',
+    totalLayers: 31,
+    nozzleTempC: 33,
+    bedTempC: 29,
+    steps: [
+      { atSec: 0, kind: 'start' },
+      { atSec: 173, kind: 'update', stateLabel: 'Printing', progress: 0.03, remainingTimeMinutes: 7, currentLayer: 0 },
+      { atSec: 189, kind: 'update', stateLabel: 'Printing', progress: 0.06, remainingTimeMinutes: 6, currentLayer: 0 },
+      { atSec: 234, kind: 'update', stateLabel: 'Printing', progress: 0.67, remainingTimeMinutes: 2, currentLayer: 0 },
+      { atSec: 310, kind: 'update', stateLabel: 'Printing', progress: 0.69, remainingTimeMinutes: 2, currentLayer: 1 },
+      { atSec: 370, kind: 'update', stateLabel: 'Printing', progress: 0.83, remainingTimeMinutes: 1, currentLayer: 18 },
+      { atSec: 431, kind: 'update', stateLabel: 'Printing', progress: 1, remainingTimeMinutes: 0, currentLayer: 31 },
+      { atSec: 646, kind: 'end', stateLabel: 'Complete', progress: 1, remainingTimeMinutes: 0, currentLayer: 31 },
+    ],
+  },
 };
 
 module.exports = { RUNS };
