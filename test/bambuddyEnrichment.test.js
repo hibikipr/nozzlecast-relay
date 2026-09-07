@@ -21,6 +21,7 @@ test('enrichmentFromStatus maps every documented field, using Bambuddy\'s real s
   assert.equal(enrichment.currentLayer, 100);
   assert.equal(enrichment.totalLayers, 250);
   assert.equal(enrichment.nozzleTempC, 221); // rounded from 220.5 -- see the Int? rounding test below
+  assert.equal(enrichment.rightNozzleTempC, null); // single-nozzle fixture -- no temperatures.nozzle_2
   assert.equal(enrichment.bedTempC, 60);
   assert.equal(enrichment.estimatedEndAt.getTime(), now.getTime() + 10 * 60 * 1000);
   assert.equal(enrichment.stageDetail, 'Purifying the chamber air');
@@ -102,6 +103,7 @@ test('enrichmentFromStatus defaults every field to null when absent from status'
   assert.equal(enrichment.currentLayer, null);
   assert.equal(enrichment.totalLayers, null);
   assert.equal(enrichment.nozzleTempC, null);
+  assert.equal(enrichment.rightNozzleTempC, null);
   assert.equal(enrichment.bedTempC, null);
   assert.equal(enrichment.estimatedEndAt, null);
 });
@@ -109,7 +111,26 @@ test('enrichmentFromStatus defaults every field to null when absent from status'
 test('enrichmentFromStatus handles a missing temperatures object without throwing', () => {
   const enrichment = enrichmentFromStatus({ progress: 10 });
   assert.equal(enrichment.nozzleTempC, null);
+  assert.equal(enrichment.rightNozzleTempC, null);
   assert.equal(enrichment.bedTempC, null);
+});
+
+// Dual-nozzle printers (H2C, X2C) -- confirmed live against a real H2C (Bambuddy printer id 1,
+// "Vic H2C") that temperatures.nozzle and temperatures.nozzle_2 are both present simultaneously,
+// not mutually exclusive or an array. rightNozzleTempC stays null on the single-nozzle fixtures
+// above (no temperatures.nozzle_2 key at all), matching PrintActivityAttributes.ContentState's
+// rightNozzleTempC being Optional -- the widget only shows L/R chips when both are non-nil.
+test('enrichmentFromStatus maps temperatures.nozzle_2 to rightNozzleTempC on a dual-nozzle printer', () => {
+  const enrichment = enrichmentFromStatus({
+    temperatures: { nozzle: 32.0, nozzle_2: 34.0, bed: 28.0 },
+  });
+  assert.equal(enrichment.nozzleTempC, 32);
+  assert.equal(enrichment.rightNozzleTempC, 34);
+});
+
+test('enrichmentFromStatus rounds rightNozzleTempC to the nearest integer', () => {
+  const enrichment = enrichmentFromStatus({ temperatures: { nozzle_2: 74.59375 } });
+  assert.equal(enrichment.rightNozzleTempC, 75);
 });
 
 test('enrichmentFromStatus defaults now to the current time', () => {

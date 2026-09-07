@@ -37,6 +37,7 @@ function buildContentState({
   currentLayer = null,
   totalLayers = null,
   nozzleTempC = null,
+  rightNozzleTempC = null,
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
@@ -53,6 +54,7 @@ function buildContentState({
     currentLayer,
     totalLayers,
     nozzleTempC,
+    rightNozzleTempC,
     bedTempC,
     coverImage,
     liveSnapshot,
@@ -71,6 +73,7 @@ function buildPushToStartPayload({
   currentLayer = null,
   totalLayers = null,
   nozzleTempC = null,
+  rightNozzleTempC = null,
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
@@ -83,7 +86,7 @@ function buildPushToStartPayload({
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
       'content-state': buildContentState({
-        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
+        startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, rightNozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
       }),
       // The BARE Swift struct name, never module-qualified -- even though
       // PrintActivityAttributes lives in the NozzleCastShared package rather than in the app's
@@ -121,6 +124,7 @@ function buildActivityStatePayload({
   currentLayer = null,
   totalLayers = null,
   nozzleTempC = null,
+  rightNozzleTempC = null,
   bedTempC = null,
   coverImage = null,
   liveSnapshot = null,
@@ -134,7 +138,7 @@ function buildActivityStatePayload({
       timestamp: Math.floor(now.getTime() / 1000),
       event,
       'content-state': buildContentState({
-        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
+        startedAt, progress, stateLabel, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, rightNozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
       }),
       // dismissal-date is a TOP-LEVEL aps key, interpreted directly by APNs/the system -- unlike
       // content-state's own Date fields, it is NOT Codable-decoded by the app's Swift struct, so

@@ -317,6 +317,7 @@ an earlier version assumed):
 | `currentLayer` | `status.layer_num` | |
 | `totalLayers` | `status.total_layers` | |
 | `nozzleTempC` | `Math.round(status.temperatures.nozzle)` | Swift side declares `Int?`; Bambuddy's raw values are fractional Doubles, and `JSONDecoder`'s default `Int` decoding does not truncate — it throws, silently failing the *entire* content-state struct (APNs still 200s regardless, since Apple never validates a payload against the app's actual Swift types). |
+| `rightNozzleTempC` | `Math.round(status.temperatures.nozzle_2)` | Right/second nozzle on dual-nozzle printers (H2C, X2C) — confirmed live against a real H2C (Bambuddy printer id 1, "Vic H2C") that `temperatures.nozzle` and `temperatures.nozzle_2` are both present simultaneously as separate fields, not an array. `null` on single-nozzle printers (no `temperatures.nozzle_2` key at all); the widget only renders "L"/"R" chips when both `nozzleTempC` and `rightNozzleTempC` are non-nil, falling back to a single unlabeled chip otherwise — see NozzleCast's `PrintActivityWidget.swift`. |
 | `bedTempC` | `Math.round(status.temperatures.bed)` | Same reasoning. |
 | `estimatedEndAt` | `now + status.remaining_time minutes` (see below) | |
 | `coverImage` | `GET /cover?token=...`, downscaled, cached per print | See Images below. |
@@ -437,6 +438,7 @@ those are only meaningful when creating an activity):
   "currentLayer": null,
   "totalLayers": null,
   "nozzleTempC": null,
+  "rightNozzleTempC": null,
   "bedTempC": null,
   "coverImage": null,
   "liveSnapshot": null,

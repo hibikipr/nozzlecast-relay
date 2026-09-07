@@ -67,6 +67,12 @@ function enrichmentFromStatus(status, { now = new Date() } = {}) {
     currentLayer: typeof status.layer_num === 'number' ? status.layer_num : null,
     totalLayers: typeof status.total_layers === 'number' ? status.total_layers : null,
     nozzleTempC: roundedOrNull(status.temperatures?.nozzle),
+    // Right/second nozzle on dual-nozzle printers (H2C, X2C) -- Bambuddy reports it as a second,
+    // separate temperatures.nozzle_2 field alongside temperatures.nozzle (confirmed live against
+    // a real H2C: both nozzle and nozzle_2 are present simultaneously), not as an array/list. Null
+    // on single-nozzle printers, matching PrintActivityAttributes.ContentState's rightNozzleTempC
+    // being Optional there too -- the widget only renders L/R chips when both are non-nil.
+    rightNozzleTempC: roundedOrNull(status.temperatures?.nozzle_2),
     bedTempC: roundedOrNull(status.temperatures?.bed),
     estimatedEndAt: remainingTimeMinutes !== null ? new Date(now.getTime() + remainingTimeMinutes * 60 * 1000) : null,
     // Bambuddy's own server-resolved name for its internal `stg_cur` stage (e.g. "Purifying the

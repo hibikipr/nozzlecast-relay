@@ -29,8 +29,8 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
 
   assert.deepEqual(Object.keys(state).sort(), [
     'bedTempC', 'coverImage', 'currentLayer', 'estimatedEndAt', 'issueCount', 'issueSeverity',
-    'jobName', 'liveSnapshot', 'nozzleTempC', 'progress', 'stageDetail', 'startedAt', 'stateLabel',
-    'totalLayers',
+    'jobName', 'liveSnapshot', 'nozzleTempC', 'progress', 'rightNozzleTempC', 'stageDetail',
+    'startedAt', 'stateLabel', 'totalLayers',
   ].sort());
   assert.equal(state.progress, 0);
   assert.equal(state.stateLabel, 'Printing');
@@ -41,6 +41,7 @@ test('buildPushToStartPayload content-state matches PrintActivityAttributes.Cont
   assert.equal(state.currentLayer, null);
   assert.equal(state.totalLayers, null);
   assert.equal(state.nozzleTempC, null);
+  assert.equal(state.rightNozzleTempC, null);
   assert.equal(state.bedTempC, null);
   assert.equal(state.coverImage, null);
   assert.equal(state.liveSnapshot, null);
@@ -274,4 +275,31 @@ test('buildPushToStartPayload passes stageDetail through unchanged', () => {
   });
 
   assert.equal(payload.aps['content-state'].stageDetail, 'Heating chamber');
+});
+
+// Dual-nozzle printers (H2C, X2C) -- rightNozzleTempC defaults to null (single-nozzle printers
+// and the NSE's in-place updates are unaffected, matching PrintActivityAttributes.ContentState's
+// rightNozzleTempC being Optional there too) and passes through unchanged when supplied.
+test('buildActivityStatePayload passes rightNozzleTempC through unchanged', () => {
+  const payload = buildActivityStatePayload({
+    event: 'update',
+    startedAt: new Date('2026-09-02T13:23:34.000Z'),
+    nozzleTempC: 32,
+    rightNozzleTempC: 34,
+  });
+
+  assert.equal(payload.aps['content-state'].nozzleTempC, 32);
+  assert.equal(payload.aps['content-state'].rightNozzleTempC, 34);
+});
+
+test('buildPushToStartPayload passes rightNozzleTempC through unchanged', () => {
+  const payload = buildPushToStartPayload({
+    printerID: 'vich2c',
+    printerName: 'Vic H2C',
+    nozzleTempC: 32,
+    rightNozzleTempC: 34,
+  });
+
+  assert.equal(payload.aps['content-state'].nozzleTempC, 32);
+  assert.equal(payload.aps['content-state'].rightNozzleTempC, 34);
 });
