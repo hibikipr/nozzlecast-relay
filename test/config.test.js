@@ -3,9 +3,6 @@ const assert = require('node:assert/strict');
 const { loadConfig } = require('../src/config');
 
 const FULL_ENV = {
-  NTFY_SERVER: 'https://ntfy.example.com',
-  NTFY_TOPIC: '3dprinter-alerts',
-  NTFY_AUTH_TOKEN: 'tk_test',
   RELAY_AUTH_SECRET: 'secret123',
   APNS_KEY_PATH: '/secrets/AuthKey_TEST.p8',
   APNS_KEY_ID: 'ABC123',
@@ -19,9 +16,6 @@ const FULL_ENV = {
 
 test('loadConfig returns normalized config when all vars present', () => {
   const config = loadConfig(FULL_ENV);
-  assert.equal(config.ntfyServer, 'https://ntfy.example.com');
-  assert.equal(config.ntfyTopic, '3dprinter-alerts');
-  assert.equal(config.ntfyAuthToken, 'tk_test');
   assert.equal(config.relayAuthSecret, 'secret123');
   assert.equal(config.apnsKeyPath, '/secrets/AuthKey_TEST.p8');
   assert.equal(config.apnsKeyId, 'ABC123');
@@ -32,27 +26,11 @@ test('loadConfig returns normalized config when all vars present', () => {
   assert.equal(config.apnsTopic, 'com.example.NozzleCast.push-type.liveactivity');
   assert.equal(config.bambuddyUrl, 'https://bambuddy.example.com');
   assert.equal(config.bambuddyApiKey, 'bb_test');
-  assert.equal(config.ntfyTriggerEnabled, true);
-  assert.equal(config.bambuddyPollTriggerEnabled, false);
   assert.equal(config.bambuddyPollIntervalMs, 15000);
   assert.equal(config.liveActivityCorrectionIntervalMs, 10 * 60 * 1000);
   assert.equal(config.dataDir, '/data');
 });
 
-test('loadConfig defaults NTFY_TRIGGER_ENABLED to true when unset (preserves pre-existing behavior)', () => {
-  const config = loadConfig(FULL_ENV);
-  assert.equal(config.ntfyTriggerEnabled, true);
-});
-
-test('loadConfig disables the ntfy trigger only on an explicit "false"', () => {
-  assert.equal(loadConfig({ ...FULL_ENV, NTFY_TRIGGER_ENABLED: 'false' }).ntfyTriggerEnabled, false);
-  assert.equal(loadConfig({ ...FULL_ENV, NTFY_TRIGGER_ENABLED: 'anything-else' }).ntfyTriggerEnabled, true);
-});
-
-test('loadConfig enables the Bambuddy poll trigger only on an explicit "true"', () => {
-  assert.equal(loadConfig({ ...FULL_ENV, BAMBUDDY_POLL_TRIGGER_ENABLED: 'true' }).bambuddyPollTriggerEnabled, true);
-  assert.equal(loadConfig({ ...FULL_ENV, BAMBUDDY_POLL_TRIGGER_ENABLED: 'yes' }).bambuddyPollTriggerEnabled, false);
-});
 
 test('loadConfig respects BAMBUDDY_POLL_INTERVAL_MS and LIVE_ACTIVITY_CORRECTION_INTERVAL_MS overrides', () => {
   const config = loadConfig({
@@ -64,10 +42,6 @@ test('loadConfig respects BAMBUDDY_POLL_INTERVAL_MS and LIVE_ACTIVITY_CORRECTION
   assert.equal(config.liveActivityCorrectionIntervalMs, 300000);
 });
 
-test('loadConfig strips a trailing slash from NTFY_SERVER', () => {
-  const config = loadConfig({ ...FULL_ENV, NTFY_SERVER: 'https://ntfy.example.com/' });
-  assert.equal(config.ntfyServer, 'https://ntfy.example.com');
-});
 
 test('loadConfig strips a trailing slash from BAMBUDDY_URL', () => {
   const config = loadConfig({ ...FULL_ENV, BAMBUDDY_URL: 'https://bambuddy.example.com/' });
@@ -80,9 +54,9 @@ test('loadConfig respects DATA_DIR override', () => {
 });
 
 test('loadConfig throws listing every missing required var', () => {
-  const { NTFY_SERVER, RELAY_AUTH_SECRET, ...partial } = FULL_ENV;
+  const { BAMBUDDY_URL, RELAY_AUTH_SECRET, ...partial } = FULL_ENV;
   assert.throws(
     () => loadConfig(partial),
-    /Missing required env vars: NTFY_SERVER, RELAY_AUTH_SECRET/
+    /Missing required env vars: RELAY_AUTH_SECRET, BAMBUDDY_URL/
   );
 });

@@ -1,7 +1,7 @@
 # Contributing
 
 `nozzlecast-relay` is a small self-hosted service built for one specific setup — a self-hosted
-[Bambuddy](https://github.com/karliky/bambuddy) instance, an ntfy server, and the
+[Bambuddy](https://github.com/karliky/bambuddy) instance and the
 [NozzleCast](https://github.com/hibikipr/NozzleCast) iOS app. It's shared publicly in case it's
 useful to others running the same stack, not as a general-purpose framework, so PRs that add
 config surface for setups this project doesn't target are likely to be declined in favor of
@@ -22,7 +22,7 @@ npm install
 npm test
 ```
 
-No live Bambuddy/ntfy/APNs credentials are required to run the test suite — it's fully unit-tested
+No live Bambuddy/APNs credentials are required to run the test suite — it's fully unit-tested
 against fakes/fixtures (see `test/`). To run the relay against a real deployment, see the
 [README](README.md#running-locally) and [README's deploying section](README.md#deploying).
 

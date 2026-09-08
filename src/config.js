@@ -1,7 +1,4 @@
 const REQUIRED_VARS = [
-  'NTFY_SERVER',
-  'NTFY_TOPIC',
-  'NTFY_AUTH_TOKEN',
   'RELAY_AUTH_SECRET',
   'APNS_KEY_PATH',
   'APNS_KEY_ID',
@@ -20,9 +17,6 @@ function loadConfig(env = process.env) {
   }
 
   return {
-    ntfyServer: env.NTFY_SERVER.replace(/\/$/, ''),
-    ntfyTopic: env.NTFY_TOPIC,
-    ntfyAuthToken: env.NTFY_AUTH_TOKEN,
     relayAuthSecret: env.RELAY_AUTH_SECRET,
     // Apple APNs auth keys are ordinarily environment-agnostic (one key works against both
     // api.push.apple.com and api.sandbox.push.apple.com) -- but confirmed empirically against a
@@ -43,20 +37,14 @@ function loadConfig(env = process.env) {
     // status to enrich a Live Activity, it never needs to control anything.
     bambuddyUrl: env.BAMBUDDY_URL.replace(/\/$/, ''),
     bambuddyApiKey: env.BAMBUDDY_API_KEY,
-    // Two independent, optional trigger toggles -- both can run at once (not the intended
-    // steady state, but not actively guarded against either), and the code for both stays in
-    // place regardless of which is enabled. NTFY_TRIGGER_ENABLED defaults to true (unset =
-    // today's existing behavior, so nothing changes for a deploy that predates this option);
-    // BAMBUDDY_POLL_TRIGGER_ENABLED defaults to false (opt-in, since it's the newer, less-proven
-    // path -- see printerStateClassifier.js's note on the unconfirmed PAUSE state value).
-    ntfyTriggerEnabled: env.NTFY_TRIGGER_ENABLED !== 'false',
-    bambuddyPollTriggerEnabled: env.BAMBUDDY_POLL_TRIGGER_ENABLED === 'true',
+    // Polling Bambuddy's own API is the only trigger. It replaced an ntfy/SSE trigger that
+    // detected prints by regex-parsing Bambuddy's own alert titles: that could only ever see the
+    // events Bambuddy chose to notify on (start, 25/50/75%, end), never a pause, a resume, or a
+    // real HMS issue, and it had no way to drive a correction on its own schedule.
     bambuddyPollIntervalMs: Number(env.BAMBUDDY_POLL_INTERVAL_MS) || 15000,
     // How often to send a correction update (fresh estimatedEndAt etc.) to an active print with
-    // no other event to report -- decouples the update cadence from Bambuddy's own ntfy
-    // milestone notifications (25/50/75%) entirely, per the design's intent to rely on
-    // ActivityKit's own native countdown timer UI between corrections rather than pushing on
-    // every percentage milestone.
+    // no other event to report. The design deliberately relies on ActivityKit's own native
+    // countdown-timer UI between corrections rather than pushing on every percentage milestone.
     liveActivityCorrectionIntervalMs: Number(env.LIVE_ACTIVITY_CORRECTION_INTERVAL_MS) || 10 * 60 * 1000,
     dataDir: env.DATA_DIR || '/data',
   };

@@ -6,7 +6,7 @@ const { AtomicJsonFile } = require('./atomicJsonFile');
 // the app once it starts observing that activity's own pushTokenUpdates) that fully replaces
 // whatever was there before -- there's no sense in which two tokens are ever valid for the same
 // printer simultaneously. Also tracks the print's startedAt/printerName, set independently by
-// startPrint() when ntfy reports the print starting: every activity update/end push must carry
+// startPrint() when the poller observes the print starting: every activity update/end push must carry
 // ActivityKit's *entire* content-state (not a diff), so later update/end pushes need the
 // original startedAt without the app having to send it back to us.
 class ActivityTokenStore {
@@ -39,7 +39,7 @@ class ActivityTokenStore {
     return this.entries.get(printerID);
   }
 
-  // Called when ntfy reports a new print starting for this printer: resets whatever was tracked
+  // Called when the poller observes a new print starting for this printer: resets whatever was tracked
   // before, since a new print means a new activity and therefore a stale (or as-yet-unregistered)
   // token for the old one -- including any cached coverImage, which is a render of the *previous*
   // job's sliced plate and must not leak into the new one's Live Activity.
@@ -58,8 +58,8 @@ class ActivityTokenStore {
 
   // Called on POST /register-activity: records the app's freshly-observed per-activity push
   // token for this printer, replacing any previous one. Preserves startedAt/printerName/
-  // coverImage already tracked from startPrint() if present (the normal case, since ntfy's
-  // "Print Started" fires before the app finishes observing its own activity's token); if
+  // coverImage already tracked from startPrint() if present (the normal case, since the poller's
+  // start transition fires before the app finishes observing its own activity's token); if
   // registration somehow lands first, creates a bare entry that startPrint() -- or an update/end
   // event's own fallback -- fills in.
   async registerToken({ printerID, token, environment }) {

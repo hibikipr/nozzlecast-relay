@@ -1,9 +1,8 @@
 # nozzlecast-relay
 
 ActivityKit push-to-start relay for [NozzleCast](https://github.com/hibikipr/NozzleCast). Watches
-for a print starting — via Bambuddy's ntfy topic, or by polling Bambuddy's own API directly and
-diffing `gcode_state` (the trigger actually in use today; see `BAMBUDDY_POLL_TRIGGER_ENABLED`
-below) — and fires an APNs push-to-start request the moment it does, so NozzleCast's Live Activity
+for a print starting — by polling Bambuddy's own API and diffing `gcode_state` — and fires an
+APNs push-to-start request the moment it does, so NozzleCast's Live Activity
 appears even while the phone is locked — something the app's own Notification Service Extension
 cannot do (`Activity.request()` only succeeds while the app is foreground; see NozzleCast's
 `ARCHITECTURE.md`). From there the relay also owns every progress/pause/error/end update for the
@@ -23,9 +22,6 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 
 | Var | Purpose |
 |---|---|
-| `NTFY_SERVER` | Base URL of the ntfy server |
-| `NTFY_TOPIC` | Topic to subscribe to |
-| `NTFY_AUTH_TOKEN` | ntfy auth token |
 | `RELAY_AUTH_SECRET` | Bearer secret required on `/register` and `DELETE /register` |
 | `APNS_KEY_PATH` | Path to the mounted **production** Apple `.p8` auth key |
 | `APNS_KEY_ID` | Production APNs auth key ID |
@@ -35,10 +31,8 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 | `APNS_BUNDLE_ID` | NozzleCast's bundle ID (relay derives the APNs topic by appending `.push-type.liveactivity`) |
 | `BAMBUDDY_URL` | Base URL of your Bambuddy instance |
 | `BAMBUDDY_API_KEY` | Bambuddy API key. **Recommend a dedicated, read-only key** (Bambuddy supports scoped keys independent of print-control/queue permissions) — the relay only ever reads printer status to enrich a Live Activity, it never needs to control anything |
-| `NTFY_TRIGGER_ENABLED` | Optional, defaults to `true`. Set to exactly `false` to disable the ntfy-based trigger (start/progress/end from Bambuddy's ntfy notifications) |
-| `BAMBUDDY_POLL_TRIGGER_ENABLED` | Optional, defaults to `false`. Set to exactly `true` to enable polling Bambuddy's own API directly for start/pause/resume/finish/failed/HMS-error detection instead — see the [poll-trigger design doc](docs/superpowers/specs/2026-09-03-bambuddy-poll-trigger-design.md) |
-| `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` (only relevant when polling is enabled) |
-| `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate (only relevant when polling is enabled) |
+| `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` — how often Bambuddy is polled for `gcode_state` transitions |
+| `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
 
@@ -54,7 +48,7 @@ already have both, and point the relay at each.
 ```bash
 npm install
 npm test
-NTFY_SERVER=... NTFY_TOPIC=... NTFY_AUTH_TOKEN=... RELAY_AUTH_SECRET=... \
+RELAY_AUTH_SECRET=... \
   APNS_KEY_PATH=... APNS_KEY_ID=... APNS_SANDBOX_KEY_PATH=... APNS_SANDBOX_KEY_ID=... \
   APNS_TEAM_ID=... APNS_BUNDLE_ID=... \
   BAMBUDDY_URL=... BAMBUDDY_API_KEY=... \

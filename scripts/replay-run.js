@@ -154,7 +154,7 @@ async function main() {
   console.log(`Replaying "${args.run}" as printerID "${printerID}" (${run.steps.length} steps, speed=${args.speed}x)\n`);
 
   // Fixed for the whole replay, NOT re-read from activity-tokens.json's startedAt: that field
-  // would be null here (startPrint() is only ever called by the real relay's own onNtfyMessage/
+  // would be null here (startPrint() is only ever called by the real relay's own poller
   // onStart handlers, which this script deliberately never invokes -- it only sends APNs directly
   // and reads the file the app's /register-activity call writes to). Every content-state push
   // must carry the SAME startedAt or the widget's elapsed-time math would be inconsistent across

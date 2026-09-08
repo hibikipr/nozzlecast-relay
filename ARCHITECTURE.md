@@ -51,13 +51,11 @@ Single Node.js service (`nozzlecast-relay`), one process:
 | `server.js` | Express HTTP API — the three `/register*` endpoint families plus `/healthz`. |
 | `tokenStore.js` | Generic JSON-file-backed token store, used for both push-to-start tokens (`tokens.json`) and plain device tokens (`device-tokens.json`). |
 | `activityTokenStore.js` | Per-printer (not per-token) JSON-file-backed store for the activity's own push token, keyed by `printerID` (`activity-tokens.json`). |
-| `ntfyWatcher.js` | Persistent SSE connection to ntfy, one of two trigger sources. |
 | `bambuddyPoller.js` | Polls Bambuddy's own API for printer state, the other trigger source. |
 | `printerStateClassifier.js` | Pure `gcode_state` transition → event classification (`start`/`pause`/`resume`/`finish`/`failed`). |
 | `hmsIssueDebouncer.js` | Debounces Bambuddy's flaky `hms_errors` presence across polls. |
 | `hmsIssues.js` | Pure severity mapping: confirmed HMS entries → `{issueSeverity, issueCount}` badge. |
-| `parsing.js` | ntfy title classification (`isStartEvent`/`isProgressEvent`/`isEndEvent`), `printerName`/`normalizedID`. |
-| `dedupe.js` | `StartEventDedupe` — prevents a duplicate push-to-start from repeated ntfy start messages. |
+| `parsing.js` | `normalizedID` — the canonical printer key, twin of NozzleCast's Swift implementation. |
 | `bambuddyClient.js` | Minimal REST client for Bambuddy's API (`printers()`, `status()`, cover/snapshot/stream-token). |
 | `printerIdCache.js` | `printerID` (relay's normalized identity) → Bambuddy's own numeric printer id. |
 | `bambuddyEnrichment.js` | Pure mapping from a Bambuddy status DTO onto content-state enrichment fields. |
@@ -110,39 +108,31 @@ drops an update — it just guarantees they land one at a time.
   registration, or cleared automatically on a dead-token APNs response.
 - `GET /healthz` — unauthenticated, for the Docker healthcheck.
 
-## Trigger sources
+## Trigger source
 
-Two independent, optional trigger sources, both feeding the same `sendPushToStart`/
-`sendActivityUpdate` functions — neither's code path is touched by the other's toggle, only which
-watcher objects get constructed and started changes:
+Polling Bambuddy's own API is the only trigger, feeding `sendPushToStart`/`sendActivityUpdate`.
 
-| Var | Default | Effect |
-|---|---|---|
-| `NTFY_TRIGGER_ENABLED` | `true` (disabled only on exact `"false"`) | Starts/stops `NtfyWatcher` |
-| `BAMBUDDY_POLL_TRIGGER_ENABLED` | `false` (enabled only on exact `"true"`) | Starts/stops `BambuddyPoller` |
+### Removed: the ntfy trigger (2026-09-07)
 
-Both can run simultaneously (not actively guarded against, but not the intended steady state — the
-current deploy runs with ntfy disabled and polling enabled).
+An SSE connection to Bambuddy's ntfy topic used to be a second, parallel trigger, classifying
+start/progress/end from alert *titles* (`isStartEvent`/`isProgressEvent`/`isEndEvent` in
+`parsing.js`, plus a `StartEventDedupe` window). It has been deleted outright rather than left
+toggled off, for three reasons:
 
-### ntfy trigger
+- **It could only see what Bambuddy chose to notify on** — start, 25/50/75%, end. A pause, a
+  resume, and an HMS issue were all structurally invisible to it, and it could not drive a
+  correction on its own schedule. Most of what the Live Activity needs, it could not supply.
+- **Title regexes are a guess about someone else's copy.** `isEndEvent` already carried a special
+  case for "Bed Cooldown Complete" — a title on the same topic that isn't a print completion at
+  all. That class of bug has no natural end.
+- **Running it alongside the poller was actively harmful, and nothing guarded against it.** Both
+  paths call `activityTokenStore.startPrint()`, which resets the printer's entry with
+  `token: null`. With both enabled, ntfy's start fired first and the poller's `start` transition
+  fired up to one poll interval later — wiping the per-activity push token the app had just
+  registered, and sending a second push-to-start for a print that already had an activity.
 
-Persistent SSE connection to `GET {NTFY_SERVER}/{NTFY_TOPIC}/sse`, authenticated with
-`NTFY_AUTH_TOKEN`. Reconnects with exponential backoff (1s → 30s cap) on drop; no missed-message
-replay. `NTFY_SERVER` must point at ntfy's internal Docker address, not a public NPM-proxied
-hostname — NPM's default `proxy_buffering` stalls SSE streams entirely (confirmed: a request
-through NPM never delivered even ntfy's own immediate handshake message).
-
-`parsing.js` classifies an incoming title into one of three buckets:
-- `isStartEvent(title)`: contains `"start"`.
-- `isProgressEvent(title)`: contains a percentage (`/\d+\s*%/`).
-- `isEndEvent(title)`: deliberately conservative — a percentage title never counts (checked
-  first), and bare `"complete"`/`"finish"` only count when `"print"` also appears, since Bambuddy
-  sends other `"...Complete"` titles on the same topic that aren't print completions (e.g.
-  `"Bed Cooldown Complete"`). `"fail"`/`"cancel"` don't need that guard.
-
-Milestone-based only (start, whatever percentages Bambuddy happens to post, complete/failed) — no
-visibility into pause or a live error, and no independent control over update cadence. This is why
-the Bambuddy-poll trigger exists.
+`parsing.js` keeps only `normalizedID`, which has nothing to do with ntfy and is used by the
+poller, the HTTP API, and the printer-id cache.
 
 ### Bambuddy-poll trigger
 
@@ -229,7 +219,7 @@ entirely, not just disabled, superseded by the debounced/severity-filtered badge
 
 ## Trigger: start (push-to-start)
 
-1. Trigger source (ntfy title match, or the poller's own transition detection) fires.
+1. The poller observes a transition into `RUNNING`.
 2. `activityTokenStore.startPrint()` records this print's start, resetting any token left over
    from a previous print for this printer.
 3. `sendPushToStart` builds the content-state (see Payload shapes below) and sends push-to-start
@@ -355,7 +345,7 @@ an earlier version assumed):
 
 | ContentState field | Bambuddy status field | Notes |
 |---|---|---|
-| `progress` | `status.progress / 100` | Preferred over the ntfy title's regex-parsed percentage — exact, not text-parsed. Title-parsed value is the fallback when enrichment fails entirely. |
+| `progress` | `status.progress / 100` | Exact, straight from Bambuddy. Falls back to `0` only when enrichment fails entirely; on an `end` event the poller's pre-transition `priorProgress` wins, since Bambuddy zeroes `progress` the instant `gcode_state` becomes `FAILED`. |
 | `jobName` | `status.subtask_name` | |
 | `currentLayer` | `status.layer_num` | |
 | `totalLayers` | `status.total_layers` | |
@@ -528,7 +518,6 @@ within ~30s on foreground regardless of this value.
 
 ## Error handling
 
-- **ntfy connection drops**: reconnect with exponential backoff (1s → 30s cap), log each attempt.
 - **APNs auth misconfiguration**: on startup, one lightweight APNs auth check per environment
   (sandbox and production each have their own key — see Configuration) so a bad deploy fails
   loudly in logs immediately rather than silently dropping every future push. Best-effort: never
@@ -539,8 +528,7 @@ within ~30s on foreground regardless of this value.
   (`BadDeviceToken`/`Unregistered`/etc.) removes/clears that entry; any other error (`500`,
   timeout, network) logs and leaves the token in place — the next trigger retries naturally, no
   dead-letter queue.
-- **Malformed/unparseable ntfy message**: log and skip, never crash the watcher loop.
-- **Single printer's Bambuddy fetch failure** (poll trigger): logged, that printer's tick is
+- **Single printer's Bambuddy fetch failure**: logged, that printer's tick is
   skipped — does not affect other printers or crash the poll loop.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
   background wake (see above), rather than a bare skip.
@@ -549,9 +537,6 @@ within ~30s on foreground regardless of this value.
 
 | Var | Purpose |
 |---|---|
-| `NTFY_SERVER` | Base URL of the ntfy server — internal Docker address, not a public NPM-proxied hostname |
-| `NTFY_TOPIC` | Topic to subscribe to |
-| `NTFY_AUTH_TOKEN` | ntfy auth token |
 | `RELAY_AUTH_SECRET` | Bearer secret required on `/register`, `/register-device`, `/register-activity`, and their `DELETE` variants |
 | `APNS_KEY_PATH` / `APNS_KEY_ID` | Mounted **production** `.p8` auth key path/ID |
 | `APNS_SANDBOX_KEY_PATH` / `APNS_SANDBOX_KEY_ID` | Mounted **sandbox/development** `.p8` auth key path/ID — a separate key pair, not one shared across environments (confirmed: a production-scoped key's JWT got a 403 `BadEnvironmentKeyInToken` from the sandbox host, the same JWT got a normal 400 `BadDeviceToken` from production) |
@@ -559,9 +544,7 @@ within ~30s on foreground regardless of this value.
 | `APNS_BUNDLE_ID` | NozzleCast's bundle ID — the Live Activity topic is derived by appending `.push-type.liveactivity`; the background-wake push uses the bare bundle ID as its topic instead |
 | `BAMBUDDY_URL` | Base URL of the Bambuddy instance |
 | `BAMBUDDY_API_KEY` | Bambuddy API key — recommend a dedicated, read-only key (Bambuddy supports scoped keys independent of print-control/queue permissions); the relay never needs to control anything |
-| `NTFY_TRIGGER_ENABLED` | Default `true`; exact `"false"` disables the ntfy trigger |
-| `BAMBUDDY_POLL_TRIGGER_ENABLED` | Default `false`; exact `"true"` enables the Bambuddy-poll trigger |
-| `BAMBUDDY_POLL_INTERVAL_MS` | Default `15000` — only relevant when polling is enabled |
+| `BAMBUDDY_POLL_INTERVAL_MS` | Default `15000` — how often Bambuddy is polled for `gcode_state` transitions |
 | `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Default `600000` (10 min); this deploy runs `60000` (1 min) since real print jobs run ~9 minutes and the 10-minute default never fired at all |
 | `DATA_DIR` | Default `/data` |
 | `PORT` | Default `3000` |

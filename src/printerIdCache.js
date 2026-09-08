@@ -1,9 +1,9 @@
 const { normalizedID } = require('./parsing');
 
-// Resolves an ntfy-reported printer name (already run through parsing.js#normalizedID by the
-// caller) to Bambuddy's own numeric printer id, so bambuddyClient.status(id) can be called.
-// Cached rather than fetched on every ntfy message -- printers don't get added mid-print, so a
-// full re-fetch is only worth doing on an actual cache miss, not continuously.
+// Resolves a normalized printer name (see parsing.js#normalizedID, applied by the caller) to
+// Bambuddy's own numeric printer id, so bambuddyClient.status(id) can be called. Cached rather
+// than re-fetched on every poll tick -- printers don't get added mid-print, so a full re-fetch is
+// only worth doing on an actual cache miss, not continuously.
 class PrinterIdCache {
   constructor({ bambuddyClient }) {
     this.bambuddyClient = bambuddyClient;
