@@ -289,6 +289,49 @@ sync independently of any relay push. `/register-device`'s own success log line 
 above) was added alongside this fix, mirroring `/register-activity`'s, for the same reason: no way
 to see arrival without it.
 
+## `liveactivitiesd`'s own per-app push budget (2026-09-07)
+
+Confirmed live via a device syslog capture during a real print: iOS enforces a private,
+**on-device**, per-app push budget for Live Activities, tracked entirely by the system daemon
+`liveactivitiesd` — separate counters for `pushToStart` and for updating an existing `activity`,
+scoped per APNs topic (i.e. per app). APNs itself has no notion of this budget at all; a push that
+would be declined by `liveactivitiesd` still gets a completely genuine `200 OK` from Apple's
+servers, indistinguishable on the wire from one that actually reached the device and updated the
+widget. The captured log lines looked like:
+
+```
+Reduced budget for com.victormanuel.NozzleCast::pushToStart to: 8
+Topic <private> has remaining budget for pushToStart of 8
+Topic <private> has remaining budget for activity of 49
+```
+
+This retroactively explains a whole day's worth of confusing symptoms that had no other common
+thread: a Live Activity's progress freezing mid-print despite the relay logging a confirmed `200
+OK` on every update, `rightNozzleTempC` never appearing despite being present and correctly sized
+in the logged payload, and the system's own "open app to see Live Activity" fallback banner —
+all just budget-exhausted pushes being silently declined *after* successful APNs delivery, not a
+decode bug, a token bug, or (per the byte-size logging added just before this was found) a
+content-state size bug. None of those were ever reproducible from the relay's side precisely
+*because* the relay has no visibility into this budget — every signal it can observe (`result.ok`,
+HTTP status, response body) reports success right up until the point `liveactivitiesd` drops the
+push, invisibly, on-device.
+
+The budget is consumed by push *volume*, not by anything content-related — heavy same-day testing
+(repeated push-to-starts and update pushes across multiple real prints, replay runs, and relay
+redeploys) is almost certainly what drove `pushToStart` down to 8 and `activity` down to 49
+remaining. It's widely believed among Live Activity developers to refill on a rolling ~24h window,
+though Apple doesn't document a number and this hasn't been independently confirmed.
+
+**Practical implications**:
+- A frozen/stale Live Activity during active development/testing is NOT necessarily a relay or app
+  bug — check whether the day's testing volume could plausibly have exhausted the budget before
+  chasing a code-level explanation.
+- There is no known way for the relay (or the app) to read the remaining budget — it was only
+  observed via a manual on-device syslog capture, not through any public API.
+- Minimize redundant push-triggering during a debugging session (repeated replay runs, redundant
+  redeploy-triggered pushes, etc.) — every one spends budget that a real print later that day may
+  need.
+
 ## Enrichment (Bambuddy telemetry)
 
 `bambuddyEnrichment.js`'s `enrichmentFromStatus(status)` maps a Bambuddy `/status` DTO onto
