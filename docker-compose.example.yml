@@ -5,9 +5,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      NTFY_SERVER: "https://ntfy.example.com"
-      NTFY_TOPIC: "3dprinter-alerts"
-      NTFY_AUTH_TOKEN: "${NTFY_AUTH_TOKEN}"
       RELAY_AUTH_SECRET: "${RELAY_AUTH_SECRET}"
       APNS_KEY_PATH: "/secrets/AuthKey.p8"
       APNS_KEY_ID: "${APNS_KEY_ID}"

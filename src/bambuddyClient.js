@@ -1,5 +1,5 @@
-// Thin REST client for the subset of Bambuddy's own API that the relay needs to enrich a Live
-// Activity beyond what ntfy's alert text carries -- printer identity and live status. Mirrors
+// Thin REST client for the subset of Bambuddy's own API that the relay needs to drive a Live
+// Activity -- printer identity and live status. Mirrors
 // only the fields NozzleCast's own BambuddyAPIClient.swift actually uses for this, not
 // Bambuddy's full status shape.
 class BambuddyClient {

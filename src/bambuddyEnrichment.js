@@ -4,10 +4,10 @@
 // machinery.
 //
 // stateLabel and the update-vs-end choice are deliberately NOT derived from status.state here --
-// those stay driven by the ntfy title in index.js/parsing.js. By the time a "Print Complete"
-// ntfy event fires, Bambuddy's live status may already read "idle" or similar, which would race
-// with detecting the *event* itself. Bambuddy's API is the source for telemetry; ntfy stays the
-// source for event timing.
+// those stay driven by BambuddyPoller's observed state TRANSITIONS. The distinction matters at an
+// end event: by the time a print finishes, a single status snapshot may already read "idle" (and
+// Bambuddy resets progress to 0 the instant it reads FAILED), so a snapshot cannot tell you what
+// just happened, only what is true now. The poller's before/after diff can.
 // Bambuddy's status.remaining_time is passed straight through from the printer's raw MQTT
 // mc_remaining_time field, which Bambu firmware reports in MINUTES, not seconds -- confirmed
 // against Bambuddy's own source (backend/app/services/bambu_mqtt.py:

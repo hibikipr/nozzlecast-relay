@@ -3,14 +3,15 @@ const { classifyTransition, RUNNING, PAUSE } = require('./printerStateClassifier
 const { HmsIssueDebouncer } = require('./hmsIssueDebouncer');
 const { badgeFromEntries } = require('./hmsIssues');
 
-// Polls Bambuddy's own API directly for printer state, as an alternative trigger source to
-// ntfy (see NTFY_TRIGGER_ENABLED/BAMBUDDY_POLL_TRIGGER_ENABLED in config.js -- both can run
-// side by side, though that's not the intended steady state). Reacts only to *observed
-// transitions*: the very first poll of a printer never fires a synthetic event -- e.g. an
-// already-RUNNING printer discovered right after the relay restarts mid-print doesn't get a
-// spurious duplicate push-to-start -- it just establishes a baseline to diff future polls
-// against. This also means transitions are inherently deduped by construction (a callback only
-// fires when the state actually changes), unlike the ntfy path's title-based StartEventDedupe.
+// Polls Bambuddy's own API directly for printer state. The relay's only trigger source, since
+// the ntfy/SSE one was removed -- that one could only ever see the events Bambuddy chose to
+// notify on (start, 25/50/75%, end), so pause, resume and HMS issues were invisible to it.
+//
+// Reacts only to *observed transitions*: the very first poll of a printer never fires a synthetic
+// event -- e.g. an already-RUNNING printer discovered right after the relay restarts mid-print
+// doesn't get a spurious duplicate push-to-start -- it just establishes a baseline to diff future
+// polls against. That also makes transitions deduped by construction (a callback only fires when
+// the state actually changes), so no separate start-event dedupe window is needed.
 //
 // Every ctx passed to a callback also carries issueSeverity/issueCount (see hmsIssues.js),
 // computed from HmsIssueDebouncer's currently-confirmed HMS entries while the printer is active

@@ -1,16 +1,6 @@
 const http = require('node:http');
 const path = require('node:path');
 const { loadConfig } = require('./config');
-const {
-  isStartEvent,
-  isProgressEvent,
-  isEndEvent,
-  progressFraction,
-  endStateLabel,
-  printerName,
-  normalizedID,
-} = require('./parsing');
-const { StartEventDedupe } = require('./dedupe');
 const { buildPushToStartPayload, buildActivityStatePayload, buildBackgroundWakePayload } = require('./payload');
 const { TokenStore } = require('./tokenStore');
 const { ActivityTokenStore } = require('./activityTokenStore');
@@ -21,7 +11,6 @@ const { PrinterIdCache } = require('./printerIdCache');
 const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('./bambuddyEnrichment');
 const { downscaleImage } = require('./imageDownscale');
 const { createServer } = require('./server');
-const { NtfyWatcher } = require('./ntfyWatcher');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 
@@ -78,12 +67,11 @@ async function main() {
     return downscaled ? downscaled.toString('base64') : null;
   };
 
-  // Best-effort enrichment of a content-state beyond what ntfy's alert text carries (progress,
-  // job name, layer/temperature telemetry, estimated end time, and now the cover/live-camera
-  // images) -- fails open on any error (printer not found, Bambuddy unreachable/slow, malformed
-  // response), same philosophy as the startup APNs auth check's timeout race: a slow/unreachable
-  // Bambuddy must never stall or crash a push, it should just fall back to the old text-only
-  // fields (progress from the ntfy title, everything else null).
+  // Best-effort enrichment of a content-state (progress, job name, layer/temperature telemetry,
+  // estimated end time, and the cover/live-camera images) -- fails open on any error (printer not
+  // found, Bambuddy unreachable/slow, malformed response), same philosophy as the startup APNs
+  // auth check's timeout race: a slow/unreachable Bambuddy must never stall or crash a push, it
+  // should just fall back to a content-state with those fields null.
   //
   // The numeric telemetry fetch (status + enrichmentFromStatus) and the two image fetches are
   // DELIBERATELY separate fail-open boundaries, not one big try/catch around everything --
@@ -191,7 +179,6 @@ async function main() {
       topic: config.apnsTopic,
     }),
   };
-  const dedupe = new StartEventDedupe();
 
   // Startup auth check, once per environment/key pair: send to a syntactically-valid-but-
   // nonexistent device token. A working key/kid/team-id combination gets a 400 BadDeviceToken
@@ -229,26 +216,6 @@ async function main() {
     }
   }
 
-  const onNtfyMessage = async (message) => {
-    const title = message.title || '';
-    const name = printerName(message.message || '');
-    if (!name) return;
-    const printerID = normalizedID(name);
-
-    if (isStartEvent(title)) {
-      if (!dedupe.shouldTrigger(printerID)) return;
-      await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
-      await sendPushToStart({ printerID, name });
-      return;
-    }
-
-    if (isProgressEvent(title) || isEndEvent(title)) {
-      const event = isEndEvent(title) ? 'end' : 'update';
-      const stateLabel = event === 'end' ? endStateLabel(title) : 'Printing';
-      await sendActivityUpdate({ event, stateLabel, printerID, name, title });
-    }
-  };
-
   // Sends the background content-available wake push to every registered device token -- see
   // buildBackgroundWakePayload. Called once at push-to-start, and then retried from
   // sendActivityUpdate's no-token branch below on every subsequent attempt (including the
@@ -277,7 +244,7 @@ async function main() {
         } else if (!result.ok) {
           console.error(`Background wake send failed (status ${result.status}) for device token ${entry.token}: ${result.body}`);
         } else {
-          console.log(`Background wake sent for printer "${name}" to device token ${entry.token}`);
+          console.log(`Background wake accepted by APNs for printer "${name}" (device token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
         console.error(`Background wake send threw for device token ${entry.token}:`, error);
@@ -316,7 +283,7 @@ async function main() {
         } else if (!result.ok) {
           console.error(`Push-to-start send failed (status ${result.status}) for token ${entry.token}: ${result.body}`);
         } else {
-          console.log(`Push-to-start sent for printer "${name}" to token ${entry.token}`);
+          console.log(`Push-to-start accepted by APNs for printer "${name}" (token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
         console.error(`Push-to-start send threw for token ${entry.token}:`, error);
@@ -336,13 +303,10 @@ async function main() {
   // tracked by activityTokenStore.startPrint() rather than "now" -- the print's real start time
   // doesn't change just because it's mid-print.
   //
-  // Trigger-source-agnostic: event/stateLabel are passed in already decided (by the ntfy title
-  // parser or by BambuddyPoller's state-transition classifier), not derived here. `title` is
-  // ntfy-only and optional -- it's used solely as a progress fallback when Bambuddy enrichment
-  // itself fails, since the poller path already gets its progress from Bambuddy directly and
-  // has no title-based percentage to fall back to anyway.
+  // event/stateLabel are passed in already decided by BambuddyPoller's state-transition
+  // classifier, not derived here.
   const sendActivityUpdate = async ({
-    event, stateLabel, printerID, name, title = null, prefetchedStatus = null, priorProgress = null,
+    event, stateLabel, printerID, name, prefetchedStatus = null, priorProgress = null,
     issueSeverity = null, issueCount = null,
   }) => {
     const activity = activityTokenStore.get(printerID);
@@ -354,12 +318,9 @@ async function main() {
 
     const startedAt = activity.startedAt ? new Date(activity.startedAt) : new Date();
 
-    // Prefer Bambuddy's own progress (exact) over the ntfy title's regex-parsed percentage,
-    // falling back to the latter only if enrichment failed entirely -- see fetchEnrichment.
     // includeLiveSnapshot: true because this IS an update/end event -- liveSnapshot is meant to
     // look "live," so it's fetched fresh here every time rather than reused from a cache.
     const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus });
-    const fallbackProgress = title ? progressFraction(title) : null;
     // No longer hardcoded to 1 for "end" -- a genuine finish naturally reads ~100% from real
     // data anyway, but a stopped/cancelled print did NOT necessarily reach 100%, and claiming it
     // did is just factually wrong (a print stopped at 60% showing "100%" on its way out).
@@ -370,8 +331,8 @@ async function main() {
     // moment of the end event itself would silently reintroduce a different wrong number (0%
     // instead of the old hardcoded 100%) for the exact same reason the hardcode was wrong.
     const progress = event === 'end'
-      ? (priorProgress ?? enrichment?.progress ?? fallbackProgress ?? 0)
-      : (enrichment?.progress ?? fallbackProgress ?? 0);
+      ? (priorProgress ?? enrichment?.progress ?? 0)
+      : (enrichment?.progress ?? 0);
 
     const payload = buildActivityStatePayload({
       event,
@@ -397,6 +358,15 @@ async function main() {
     // actual size on every send, rather than only when something looks wrong, is what makes it
     // possible to correlate an on-device "activity didn't update" report against a specific
     // push after the fact, instead of guessing from a synthetic worst case.
+    //
+    // "accepted by APNs" below is deliberate wording, not a stylistic choice. A 2xx here means
+    // Apple took the push, NOT that the device applied it. Two confirmed ways to get a genuine
+    // 200 for a push that changes nothing on screen: liveactivitiesd declining it on its private
+    // on-device budget (see ARCHITECTURE.md), and an activity that has already ended -- whose
+    // token keeps returning 200 for its whole dismissal window while every push is discarded. A
+    // relay log full of "sent" lines for a Live Activity that visibly stopped updating is exactly
+    // the trap that made an app-side teardown bug read as a relay delivery problem for days. The
+    // apns-id is logged alongside so a specific push can be looked up in Apple's delivery record.
     const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
     console.log(`Activity ${event} payload for printer "${name}": ${payloadBytes} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
     try {
@@ -408,42 +378,23 @@ async function main() {
       } else if (!result.ok) {
         console.error(`Activity ${event} send failed (status ${result.status}) for printer "${name}": ${result.body}`);
       } else {
-        console.log(`Activity ${event} sent for printer "${name}" (progress=${progress ?? 'n/a'})`);
+        console.log(`Activity ${event} accepted by APNs for printer "${name}" (progress=${progress ?? 'n/a'}, apns-id ${result.apnsId ?? 'n/a'})`);
       }
     } catch (error) {
       console.error(`Activity ${event} send threw for printer "${name}":`, error);
     }
   };
 
-  // Both trigger sources can be independently enabled/disabled (NTFY_TRIGGER_ENABLED,
-  // BAMBUDDY_POLL_TRIGGER_ENABLED) -- neither is deleted when the other is preferred, so
-  // switching back is just a config change, not a code change.
-  const watcher = config.ntfyTriggerEnabled
-    ? new NtfyWatcher({
-        server: config.ntfyServer,
-        topic: config.ntfyTopic,
-        authToken: config.ntfyAuthToken,
-        onMessage: onNtfyMessage,
-      })
-    : null;
-  if (watcher) {
-    watcher.start();
-    console.log(`ntfy trigger enabled, watching ${config.ntfyServer}/${config.ntfyTopic}`);
-  } else {
-    console.log('ntfy trigger disabled (NTFY_TRIGGER_ENABLED=false)');
-  }
-
   // Polls Bambuddy's own API directly for start/pause/resume/finish/failed state transitions,
-  // plus a periodic correction push (fresh estimatedEndAt etc.) on a fixed interval rather than
-  // tying updates to Bambuddy's own ntfy percentage milestones -- see bambuddyPoller.js and
+  // plus a periodic correction push (fresh estimatedEndAt etc.) on a fixed interval -- see
+  // bambuddyPoller.js and
   // printerStateClassifier.js for the transition logic. Every ctx the poller hands to a callback
   // also carries issueSeverity/issueCount (see hmsIssues.js/hmsIssueDebouncer.js) -- the
   // severity-filtered, debounced replacement for the earlier naive "any new HMS code = Error"
   // version, which was confirmed live to be a false-positive source (see the design doc's "HMS
   // error -> Error update: disabled after a real false positive" section) and has since been
   // superseded by this badge instead of just staying disabled.
-  const poller = config.bambuddyPollTriggerEnabled
-    ? new BambuddyPoller({
+  const poller = new BambuddyPoller({
         bambuddyClient,
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
@@ -489,14 +440,9 @@ async function main() {
             issueSeverity,
             issueCount,
           }),
-      })
-    : null;
-  if (poller) {
-    poller.start();
-    console.log(`Bambuddy poll trigger enabled, polling every ${config.bambuddyPollIntervalMs}ms`);
-  } else {
-    console.log('Bambuddy poll trigger disabled (BAMBUDDY_POLL_TRIGGER_ENABLED not "true")');
-  }
+  });
+  poller.start();
+  console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 
   const app = createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret });
   const port = process.env.PORT || 3000;
@@ -507,8 +453,7 @@ async function main() {
 
   const shutdown = () => {
     console.log('Shutting down...');
-    if (watcher) watcher.stop();
-    if (poller) poller.stop();
+    poller.stop();
     server.close(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);
