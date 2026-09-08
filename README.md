@@ -78,6 +78,21 @@ Copy `docker-compose.example.yml` to `docker-compose.yml`, put your Apple `.p8` 
 docker compose up -d --build
 ```
 
+### Prebuilt images
+
+Each GitHub release publishes a multi-arch image to `ghcr.io/hibikipr/nozzlecast-relay`:
+
+| Tag | Moves to |
+|---|---|
+| `latest` | the newest **stable** release only |
+| `beta` | the newest prerelease |
+| `1.0.0-beta5` (exact version) | never — pin to this for a reproducible deploy |
+| `sha-<short sha>` | never — the exact commit that produced the build |
+
+Every release so far has been a prerelease, so **`latest` does not move yet** — track `beta` (or
+pin an exact version) until a stable release is cut. `latest` used to be applied to every beta and
+every manual build, which made it meaningless as a stability signal.
+
 ## API
 
 - `POST /register` — body `{ "token": string, "environment": "sandbox" | "production" }`,
@@ -102,10 +117,11 @@ docker compose up -d --build
 - `POST /register-activity` — body `{ "token": string, "printerID": string, "environment": "sandbox" | "production" }`,
   same auth. Registers the *activity's own* per-activity push token (from
   `Activity<PrintActivityAttributes>.activityUpdates` → `activity.pushTokenUpdates` on the app
-  side), keyed by printerID rather than by token — a printer only ever has one live activity at a
-  time, and each new print's registration fully replaces whatever token was stored for that
-  printer. Once registered, this is the token the relay pushes every `update`/`end` event to for
-  that printer's whole print — triggered by real Bambuddy state transitions (start/pause/resume/
+  side), keyed by printerID and holding **one token per device** showing that print — every device
+  running the app gets its own Live Activity for the same print, with its own independent
+  ActivityKit token, so a second device registering joins the list rather than evicting the first.
+  Only a new print (detected by the poller) clears it. Once registered, these are the tokens the
+  relay pushes every `update`/`end` event to for that printer's whole print — triggered by real Bambuddy state transitions (start/pause/resume/
   finish/failed) and new HMS issues when polling is enabled, or by `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS`
   otherwise, not by any particular progress percentage — rather than depending on the app, NSE, or
   widget ever running again after the initial push-to-start. `printerID` should be the same value
