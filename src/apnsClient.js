@@ -69,10 +69,17 @@ class ApnsClient {
       });
 
       let status = null;
+      let apnsId = null;
       let responseBody = '';
 
       stream.on('response', (headers) => {
         status = headers[':status'];
+        // Apple's own correlation id for this push. Worth surfacing because a 2xx from APNs is
+        // acceptance, not application: a Live Activity token whose activity has already ended
+        // keeps returning 200 through its dismissal window while the device silently discards
+        // every push. When a Live Activity visibly stops updating, this is the only handle that
+        // ties a relay log line to Apple's own delivery record for that specific push.
+        apnsId = headers['apns-id'] || null;
       });
       stream.on('data', (chunk) => {
         responseBody += chunk.toString();
@@ -81,6 +88,7 @@ class ApnsClient {
         settleResolve({
           ok: status >= 200 && status < 300,
           status,
+          apnsId,
           shouldRemoveToken: REMOVABLE_STATUSES.has(status),
           body: responseBody,
         });

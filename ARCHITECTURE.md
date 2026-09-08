@@ -532,6 +532,15 @@ within ~30s on foreground regardless of this value.
   skipped — does not affect other printers or crash the poll loop.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
   background wake (see above), rather than a bare skip.
+- **A 2xx from APNs is acceptance, not application.** Nothing the relay can observe distinguishes
+  a push that the device applied from one it silently discarded. The case that actually bites: a
+  Live Activity that has already *ended* keeps returning 200 on its token for the whole dismissal
+  window (up to 30 minutes), so the relay logs a clean success for every update while the frozen
+  activity sits on the Lock Screen. Success log lines therefore say "accepted by APNs", never
+  "sent", and carry the `apns-id` so a specific push can be matched against Apple's own delivery
+  record. If a Live Activity stops updating while these lines keep appearing, suspect the device
+  side, not delivery — that exact reading cost several days of debugging in the app's
+  `PrintLiveActivityManager` teardown bug (NozzleCast #15).
 
 ## Configuration
 

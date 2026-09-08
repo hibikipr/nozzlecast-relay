@@ -244,7 +244,7 @@ async function main() {
         } else if (!result.ok) {
           console.error(`Background wake send failed (status ${result.status}) for device token ${entry.token}: ${result.body}`);
         } else {
-          console.log(`Background wake sent for printer "${name}" to device token ${entry.token}`);
+          console.log(`Background wake accepted by APNs for printer "${name}" (device token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
         console.error(`Background wake send threw for device token ${entry.token}:`, error);
@@ -283,7 +283,7 @@ async function main() {
         } else if (!result.ok) {
           console.error(`Push-to-start send failed (status ${result.status}) for token ${entry.token}: ${result.body}`);
         } else {
-          console.log(`Push-to-start sent for printer "${name}" to token ${entry.token}`);
+          console.log(`Push-to-start accepted by APNs for printer "${name}" (token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
         console.error(`Push-to-start send threw for token ${entry.token}:`, error);
@@ -358,6 +358,14 @@ async function main() {
     // actual size on every send, rather than only when something looks wrong, is what makes it
     // possible to correlate an on-device "activity didn't update" report against a specific
     // push after the fact, instead of guessing from a synthetic worst case.
+    //
+    // "accepted by APNs" below is deliberate wording, not a stylistic choice. A 2xx here means
+    // Apple took the push, NOT that the device applied it -- and the specific case that matters
+    // is an activity that has already ended: its token keeps returning 200 for the whole
+    // dismissal window (up to 30 minutes) while every push is silently discarded on-device. A
+    // relay log full of "sent" lines for a Live Activity that visibly stopped updating is exactly
+    // the trap that made an app-side teardown bug read as a relay delivery problem for days. The
+    // apns-id is logged alongside so a specific push can be looked up in Apple's delivery record.
     const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
     console.log(`Activity ${event} payload for printer "${name}": ${payloadBytes} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
     try {
@@ -369,7 +377,7 @@ async function main() {
       } else if (!result.ok) {
         console.error(`Activity ${event} send failed (status ${result.status}) for printer "${name}": ${result.body}`);
       } else {
-        console.log(`Activity ${event} sent for printer "${name}" (progress=${progress ?? 'n/a'})`);
+        console.log(`Activity ${event} accepted by APNs for printer "${name}" (progress=${progress ?? 'n/a'}, apns-id ${result.apnsId ?? 'n/a'})`);
       }
     } catch (error) {
       console.error(`Activity ${event} send threw for printer "${name}":`, error);

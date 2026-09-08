@@ -7,7 +7,7 @@ function fakeAuthProvider(token = 'fake.jwt.token') {
   return { getToken: () => token };
 }
 
-function fakeConnectReturning({ status, responseBody = '' }) {
+function fakeConnectReturning({ status, responseBody = '', apnsId = null }) {
   const calls = [];
   const connect = (origin) => {
     const session = new EventEmitter();
@@ -17,7 +17,7 @@ function fakeConnectReturning({ status, responseBody = '' }) {
       const stream = new EventEmitter();
       stream.end = () => {
         process.nextTick(() => {
-          stream.emit('response', { ':status': status });
+          stream.emit('response', apnsId ? { ':status': status, 'apns-id': apnsId } : { ':status': status });
           if (responseBody) stream.emit('data', Buffer.from(responseBody));
           stream.emit('end');
         });
@@ -166,4 +166,26 @@ test('send() rejects instead of crashing when the HTTP/2 session itself emits an
   );
   assert.equal(destroyed, true);
   assert.equal(closed, false);
+});
+
+// APNs returns 200 for a Live Activity token whose activity has already ended, right through its
+// dismissal window -- the push is simply discarded on-device with no signal back here. `apns-id`
+// is the only handle that ties a relay log line to Apple's own delivery record for that push, so
+// without it there is no way to investigate an update the device never applied.
+test('send() surfaces the apns-id header so a push can be correlated with Apple\'s delivery record', async () => {
+  const { connect } = fakeConnectReturning({ status: 200, apnsId: '8A9B7C6D-1E2F-3A4B-5C6D-7E8F9A0B1C2D' });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+
+  const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+
+  assert.equal(result.apnsId, '8A9B7C6D-1E2F-3A4B-5C6D-7E8F9A0B1C2D');
+});
+
+test('send() reports apnsId as null when APNs returns no apns-id header', async () => {
+  const { connect } = fakeConnectReturning({ status: 200 });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+
+  const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+
+  assert.equal(result.apnsId, null);
 });
