@@ -148,9 +148,8 @@ test('POST /register-activity with the correct bearer token registers it, keyed 
     .send({ token: 'actabc', printerID: 'samp1s', environment: 'sandbox' });
 
   assert.equal(res.status, 200);
-  const entry = activityTokenStore.get('samp1s');
-  assert.equal(entry.token, 'actabc');
-  assert.equal(entry.environment, 'sandbox');
+  assert.deepEqual(activityTokenStore.tokensFor('samp1s').map((t) => t.token), ['actabc']);
+  assert.equal(activityTokenStore.tokensFor('samp1s')[0].environment, 'sandbox');
 });
 
 test('POST /register-activity normalizes printerID the same way push-to-start does', async () => {
@@ -162,7 +161,7 @@ test('POST /register-activity normalizes printerID the same way push-to-start do
     .set('Authorization', 'Bearer secret123')
     .send({ token: 'actabc', printerID: 'Sam P1S', environment: 'sandbox' });
 
-  assert.equal(activityTokenStore.get('samp1s').token, 'actabc');
+  assert.deepEqual(activityTokenStore.tokensFor('samp1s').map((t) => t.token), ['actabc']);
   assert.equal(activityTokenStore.get('Sam P1S'), undefined);
 });
 
@@ -201,7 +200,7 @@ test('POST /register-activity rejects a missing token, printerID, or invalid env
   assert.equal(badEnv.status, 400);
 });
 
-test('POST /register-activity for the same printer twice replaces the token, not duplicates it', async () => {
+test('POST /register-activity from two devices keeps both, under the one printerID', async () => {
   const activityTokenStore = await freshActivityStore();
   const app = createServer({ activityTokenStore, authSecret: 'secret123' });
 
@@ -214,7 +213,11 @@ test('POST /register-activity for the same printer twice replaces the token, not
     .set('Authorization', 'Bearer secret123')
     .send({ token: 'new-token', printerID: 'samp1s', environment: 'production' });
 
+  // One ENTRY per printer still, but now carrying one token per device watching that print --
+  // a second device registering must not evict the first (see activityTokenStore.js).
   assert.equal(activityTokenStore.list().length, 1);
-  assert.equal(activityTokenStore.get('samp1s').token, 'new-token');
-  assert.equal(activityTokenStore.get('samp1s').environment, 'production');
+  assert.deepEqual(
+    activityTokenStore.tokensFor('samp1s').map((t) => t.token).sort(),
+    ['new-token', 'old-token'],
+  );
 });

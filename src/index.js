@@ -310,7 +310,8 @@ async function main() {
     issueSeverity = null, issueCount = null,
   }) => {
     const activity = activityTokenStore.get(printerID);
-    if (!activity || !activity.token) {
+    const deviceTokens = activityTokenStore.tokensFor(printerID);
+    if (!activity || deviceTokens.length === 0) {
       console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake`);
       await sendBackgroundWake(name);
       return;
@@ -369,19 +370,24 @@ async function main() {
     // apns-id is logged alongside so a specific push can be looked up in Apple's delivery record.
     const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
     console.log(`Activity ${event} payload for printer "${name}": ${payloadBytes} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
-    try {
-      const client = apnsClients[activity.environment] || apnsClients.production;
-      const result = await client.send({ token: activity.token, environment: activity.environment, payload });
-      if (result.shouldRemoveToken) {
-        await activityTokenStore.clearToken(printerID);
-        console.log(`Removed dead activity token (status ${result.status}) for printer "${name}"`);
-      } else if (!result.ok) {
-        console.error(`Activity ${event} send failed (status ${result.status}) for printer "${name}": ${result.body}`);
-      } else {
-        console.log(`Activity ${event} accepted by APNs for printer "${name}" (progress=${progress ?? 'n/a'}, apns-id ${result.apnsId ?? 'n/a'})`);
+    // One push per device showing this print's Live Activity, not one per printer. Each device
+    // has its own ActivityKit token and its own on-device liveactivitiesd budget, so a failure
+    // against one says nothing about the others -- a dead token drops only that device.
+    for (const device of deviceTokens) {
+      try {
+        const client = apnsClients[device.environment] || apnsClients.production;
+        const result = await client.send({ token: device.token, environment: device.environment, payload });
+        if (result.shouldRemoveToken) {
+          await activityTokenStore.removeToken(printerID, device.token);
+          console.log(`Removed dead activity token (status ${result.status}) for printer "${name}" (token ${device.token})`);
+        } else if (!result.ok) {
+          console.error(`Activity ${event} send failed (status ${result.status}) for printer "${name}" (token ${device.token}): ${result.body}`);
+        } else {
+          console.log(`Activity ${event} accepted by APNs for printer "${name}" (progress=${progress ?? 'n/a'}, token ${device.token}, apns-id ${result.apnsId ?? 'n/a'})`);
+        }
+      } catch (error) {
+        console.error(`Activity ${event} send threw for printer "${name}" (token ${device.token}):`, error);
       }
-    } catch (error) {
-      console.error(`Activity ${event} send threw for printer "${name}":`, error);
     }
   };
 

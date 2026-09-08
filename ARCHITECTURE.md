@@ -50,7 +50,7 @@ Single Node.js service (`nozzlecast-relay`), one process:
 | `config.js` | Env var parsing/validation/defaults. |
 | `server.js` | Express HTTP API — the three `/register*` endpoint families plus `/healthz`. |
 | `tokenStore.js` | Generic JSON-file-backed token store, used for both push-to-start tokens (`tokens.json`) and plain device tokens (`device-tokens.json`). |
-| `activityTokenStore.js` | Per-printer (not per-token) JSON-file-backed store for the activity's own push token, keyed by `printerID` (`activity-tokens.json`). |
+| `activityTokenStore.js` | Per-printer store of the per-activity push tokens, keyed by `printerID` and holding one token per device watching that print (`activity-tokens.json`). |
 | `bambuddyPoller.js` | Polls Bambuddy's own API for printer state, the other trigger source. |
 | `printerStateClassifier.js` | Pure `gcode_state` transition → event classification (`start`/`pause`/`resume`/`finish`/`failed`). |
 | `hmsIssueDebouncer.js` | Debounces Bambuddy's flaky `hms_errors` presence across polls. |
@@ -72,14 +72,13 @@ Three separate JSON files under `/data` (mounted volume, survives restarts/redep
   environment, registeredAt }`.
 - **`device-tokens.json`** — plain APNs device tokens, same shape, used for the background-wake
   push.
-- **`activity-tokens.json`** — one entry per **printer** (not per token — a printer only ever has
-  one live activity at a time, and a fresh registration always fully replaces whatever was tracked
-  for that printer): `{ printerID, printerName, startedAt, token, environment, registeredAt }`.
-  `printerName`/`startedAt` are set independently of `token`/`environment`/`registeredAt`: the
-  former come from the print-start event, the latter from the app's `/register-activity` call,
-  which normally arrives slightly *after* the start event. Every activity update/end push has to
-  carry ActivityKit's entire content-state (not a diff), so the original `startedAt` has to survive
-  independently of whenever the token itself shows up.
+- **`activity-tokens.json`** — one entry per printer, each holding a **list** of per-activity
+  ActivityKit push tokens: one per device currently showing that print's Live Activity, plus the
+  print's `startedAt`/`printerName` and its cached `coverImage`. The former come from the poller's
+  start transition, the latter from each app's `/register-activity` call. Every activity update/end
+  push has to carry the entire content-state, so `startedAt` is tracked here rather than asked back
+  from the app. Entries written before tokens became a list (a single top-level
+  `token`/`environment`/`registeredAt`) are migrated on load.
 
 All three are loaded at startup and rewritten on every register/deregister/prune, via the shared
 `AtomicJsonFile` helper (`atomicJsonFile.js`): write to a `.tmp` path, then rename over the real
@@ -101,10 +100,12 @@ drops an update — it just guarantees they land one at a time.
 - `POST /register-activity` — same auth. Body `{ token, printerID, environment }`. Upserts into
   `activity-tokens.json`, keyed by `printerID` (re-normalized server-side through the same
   `normalizedID()` the relay uses internally, so a lookup always matches even if the app forwards
-  something other than the exact `attributes.printerID` it was given at start). Logs
-  `Registered activity token for printer "X" (environment)` on success — added specifically so a
-  registration's exact arrival time is visible in logs (see Background wake retry below for why
-  that mattered). No `DELETE /register-activity` — a stale token is superseded by the next print's
+  something other than the exact `attributes.printerID` it was given at start). Additive across
+  devices: a second device registering for the same print joins the list rather than evicting the
+  first. Logs `Registered activity token for printer "X" (environment) -- N device(s) now watching
+  this print` on success — the arrival time was added so a registration's exact moment is visible
+  in logs (see Background wake retry below), and the device count so a second device joining is
+  visible at all, which it was not while registrations silently replaced each other. No `DELETE /register-activity` — a stale token is superseded by the next print's
   registration, or cleared automatically on a dead-token APNs response.
 - `GET /healthz` — unauthenticated, for the Docker healthcheck.
 
@@ -532,6 +533,8 @@ within ~30s on foreground regardless of this value.
   skipped — does not affect other printers or crash the poll loop.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
   background wake (see above), rather than a bare skip.
+- **A dead activity token drops only that device.** A 400/410 removes that one token from the
+  printer's list; every other device watching the same print keeps receiving updates.
 - **A 2xx from APNs is acceptance, not application.** Nothing the relay can observe distinguishes
   a push the device applied from one it silently discarded. There are (at least) two independent
   ways to get a genuine 200 for a push that changes nothing on screen:
