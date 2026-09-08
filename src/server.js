@@ -64,9 +64,11 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
   // push-to-start-created activity exists. Registering this is what lets the relay send
   // update/end pushes directly to that activity later, instead of relying on any local device
   // code (NSE included) to find and update it -- see ARCHITECTURE.md's push-to-start-relay
-  // design notes for why that path can't be relied on. Keyed by printerID rather than by token:
-  // a printer only ever has one live activity/token at a time, and a fresh registration for the
-  // same printer always means a new print replacing the last one.
+  // design notes for why that path can't be relied on. Keyed by printerID, holding one token
+  // per DEVICE showing that print: every device running the app gets its own Live Activity for
+  // the same print, with its own independent ActivityKit token, so a second device registering
+  // must not evict the first (confirmed live 2026-09-08 -- see activityTokenStore.js). Only a new
+  // print, detected by the poller, clears the list.
   app.post('/register-activity', requireAuth(authSecret), async (req, res) => {
     const { token, printerID, environment } = req.body || {};
     if (!token || !printerID || !['sandbox', 'production'].includes(environment)) {
@@ -77,7 +79,10 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     // ever forwards something other than the exact attributes.printerID it was given at start.
     const normalizedPrinterID = normalizedID(printerID);
     await activityTokenStore.registerToken({ printerID: normalizedPrinterID, token, environment });
-    console.log(`Registered activity token for printer "${normalizedPrinterID}" (${environment})`);
+    // The device count is the load-bearing part: a second device joining a print used to be
+    // invisible here precisely because it silently replaced the first one's token.
+    const deviceCount = activityTokenStore.tokensFor(normalizedPrinterID).length;
+    console.log(`Registered activity token for printer "${normalizedPrinterID}" (${environment}) -- ${deviceCount} device(s) now watching this print`);
     res.status(200).json({ ok: true });
   });
 

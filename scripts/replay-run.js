@@ -5,8 +5,8 @@
 // complete labels, dismissal) without waiting for an actual print to run.
 //
 // Must run with the SAME DATA_DIR/env as the live relay -- it reads tokens.json directly to know
-// who to push-to-start, and polls activity-tokens.json to discover the per-activity token the app
-// registers via /register-activity (the live relay's own HTTP server handles that POST for real;
+// who to push-to-start, and polls activity-tokens.json to discover the per-activity tokens the
+// apps register via /register-activity (the live relay's own HTTP server handles that POST for real;
 // this script never touches the server, it only reads the file it writes to). Run it inside the
 // relay container:
 //
@@ -91,8 +91,8 @@ async function waitForActivityToken(activityTokenStore, printerID, timeoutMs, on
   let lastWakeAt = Date.now(); // already sent once, right before this call
   while (Date.now() < deadline) {
     await activityTokenStore.load();
-    const entry = activityTokenStore.get(printerID);
-    if (entry && entry.token) return entry;
+    const devices = activityTokenStore.tokensFor(printerID);
+    if (devices.length > 0) return devices;
     if (Date.now() - lastWakeAt >= WAKE_RETRY_MS) {
       await onRetryWake();
       lastWakeAt = Date.now();
@@ -186,33 +186,33 @@ async function main() {
       }
       await sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId);
       process.stdout.write(`Waiting for the app to register this activity's push token via /register-activity (retrying the background wake every ${WAKE_RETRY_MS / 1000}s: "w") `);
-      const activity = await waitForActivityToken(
+      const devices = await waitForActivityToken(
         activityTokenStore,
         printerID,
         args.timeoutMs,
         () => sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId),
       );
       console.log('');
-      if (!activity) {
+      if (!devices) {
         console.error(`Timed out after ${args.timeoutMs}ms -- open NozzleCast now if it isn't foregrounded, or rerun with a longer --timeout-ms. Continuing: update/end pushes below will just be skipped, same as a real print whose registration never lands in time.`);
       } else {
-        console.log(`Registered: token ...${activity.token.slice(-8)} (${activity.environment})\n`);
+        console.log(`Registered: ${devices.map((d) => `...${d.token.slice(-8)} (${d.environment})`).join(', ')}\n`);
       }
       continue;
     }
 
     await activityTokenStore.load();
-    let activity = activityTokenStore.get(printerID);
-    if (!activity || !activity.token) {
+    let devices = activityTokenStore.tokensFor(printerID);
+    if (devices.length === 0) {
       console.log(`[t=${step.atSec}s] ${step.kind} stateLabel=${step.stateLabel} progress=${step.progress} -- no activity token yet, retrying background wake and giving it up to ${args.timeoutMs}ms to land`);
-      activity = await waitForActivityToken(
+      devices = await waitForActivityToken(
         activityTokenStore,
         printerID,
         args.timeoutMs,
         () => sendBackgroundWake(deviceTokenStore, apnsClients, config.apnsBundleId),
       );
       console.log('');
-      if (!activity) {
+      if (!devices) {
         console.log(`  SKIPPED -- still no activity token after ${args.timeoutMs}ms`);
         continue;
       }
@@ -240,9 +240,12 @@ async function main() {
       bedTempC: run.bedTempC,
       now,
     });
-    const client = apnsClients[activity.environment] || apnsClients.production;
-    const result = await client.send({ token: activity.token, environment: activity.environment, payload });
-    console.log(`[t=${step.atSec}s] ${step.kind} stateLabel=${step.stateLabel} progress=${step.progress}: ${result.ok ? 'OK' : `FAILED (${result.status}) ${result.body}`}`);
+    // Mirrors the real relay: one push per device watching this print, not one per printer.
+    for (const device of devices) {
+      const client = apnsClients[device.environment] || apnsClients.production;
+      const result = await client.send({ token: device.token, environment: device.environment, payload });
+      console.log(`[t=${step.atSec}s] ${step.kind} stateLabel=${step.stateLabel} progress=${step.progress} -> ...${device.token.slice(-8)}: ${result.ok ? 'OK' : `FAILED (${result.status}) ${result.body}`}`);
+    }
   }
 
   console.log('\nReplay complete.');
