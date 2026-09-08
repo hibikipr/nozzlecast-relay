@@ -533,14 +533,19 @@ within ~30s on foreground regardless of this value.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
   background wake (see above), rather than a bare skip.
 - **A 2xx from APNs is acceptance, not application.** Nothing the relay can observe distinguishes
-  a push that the device applied from one it silently discarded. The case that actually bites: a
-  Live Activity that has already *ended* keeps returning 200 on its token for the whole dismissal
-  window (up to 30 minutes), so the relay logs a clean success for every update while the frozen
-  activity sits on the Lock Screen. Success log lines therefore say "accepted by APNs", never
-  "sent", and carry the `apns-id` so a specific push can be matched against Apple's own delivery
-  record. If a Live Activity stops updating while these lines keep appearing, suspect the device
-  side, not delivery — that exact reading cost several days of debugging in the app's
-  `PrintLiveActivityManager` teardown bug (NozzleCast #15).
+  a push the device applied from one it silently discarded. There are (at least) two independent
+  ways to get a genuine 200 for a push that changes nothing on screen:
+  1. **`liveactivitiesd` declined it on budget** — see that section above. Invisible to APNs.
+  2. **The activity had already ended.** Its token keeps returning 200 for the whole dismissal
+     window (up to 30 minutes), so the relay logs a clean success for every update while a frozen
+     activity sits on the Lock Screen looking merely stale. This is what NozzleCast #15 turned out
+     to be: the app's own `PrintLiveActivityManager.sync()` ended activities the relay had just
+     created, and the relay's logs said delivery was working the entire time — because, by every
+     signal available to it, delivery *was* working.
+
+  Success log lines therefore say "accepted by APNs", never "sent", and carry the `apns-id` so a
+  specific push can be matched against Apple's own delivery record. **If a Live Activity stops
+  updating while these lines keep appearing, the relay has already done its job — look on-device.**
 
 ## Configuration
 

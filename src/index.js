@@ -360,9 +360,10 @@ async function main() {
     // push after the fact, instead of guessing from a synthetic worst case.
     //
     // "accepted by APNs" below is deliberate wording, not a stylistic choice. A 2xx here means
-    // Apple took the push, NOT that the device applied it -- and the specific case that matters
-    // is an activity that has already ended: its token keeps returning 200 for the whole
-    // dismissal window (up to 30 minutes) while every push is silently discarded on-device. A
+    // Apple took the push, NOT that the device applied it. Two confirmed ways to get a genuine
+    // 200 for a push that changes nothing on screen: liveactivitiesd declining it on its private
+    // on-device budget (see ARCHITECTURE.md), and an activity that has already ended -- whose
+    // token keeps returning 200 for its whole dismissal window while every push is discarded. A
     // relay log full of "sent" lines for a Live Activity that visibly stopped updating is exactly
     // the trap that made an app-side teardown bug read as a relay delivery problem for days. The
     // apns-id is logged alongside so a specific push can be looked up in Apple's delivery record.
