@@ -1,8 +1,11 @@
 name: Publish Docker image
 
 on:
+  # `published` alone, NOT [published, prereleased]: GitHub emits `published` for prereleases too,
+  # so listing both fired this workflow twice for every beta -- two concurrent jobs building and
+  # pushing the same image tags, racing each other at the registry for no benefit.
   release:
-    types: [published, prereleased]
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -32,13 +35,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tag scheme (comments kept out of the `tags:` block scalar below, where they would be
+      # literal input rather than YAML comments):
+      #   <version>  every release, for pinning        e.g. 1.0.0-beta5
+      #   latest     newest STABLE release only        -- was applied unconditionally, so every
+      #              beta and every manual dispatch moved it, which made it useless as a
+      #              stability signal
+      #   beta       newest prerelease                 -- the moving tag for beta deploys, now
+      #              that `latest` deliberately no longer moves for them
+      #   sha-<sha>  every build, for exact traceability
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+            type=raw,value=beta,enable=${{ github.event_name == 'release' && github.event.release.prerelease == true }}
             type=sha,format=short
             type=raw,value=${{ github.event.inputs.ref }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
