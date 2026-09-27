@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 
-const STARTING_QUALITY = 0.5;
-const QUALITY_STEP = 0.1;
+const STARTING_QUALITY = 0.95;
+const QUALITY_STEP = 0.05;
 const QUALITY_FLOOR = 0.1;
 
 // Matches PrintLiveActivityManager.downscaledCoverImage / NotificationService.downscaledThumbnail
@@ -16,7 +16,14 @@ const QUALITY_FLOOR = 0.1;
 // budget. There's no equivalent "device scale" concept to fight in Node/sharp, but call this out
 // so nobody reintroduces something similar via a DPI/density option.
 //
-// Starts JPEG quality at 0.5 and steps down by 0.1 while still over maxBytes. If still over
+// Starts JPEG quality high (0.95) and steps down by 0.05 while still over maxBytes, returning the
+// first (i.e. highest-quality) encoding that fits -- NOT starting at some already-conservative
+// quality under the assumption it'll usually need to come down anyway. A 36-40px thumbnail is
+// tiny enough that even 90%+ quality routinely fits maxBytes with room to spare (confirmed live:
+// a real 1280x720 camera frame downscaled to 40px hit budget at quality=95, using 906 of 1300
+// bytes, versus 466 bytes at quality=50 -- the old starting point was leaving most of the
+// already-budgeted, already-safe byte allowance on the table for no reason, which is exactly why
+// these images looked more pixelated than the byte budget actually required). If still over
 // budget at the 0.1 floor, returns null (not a smaller-than-requested image) -- fails closed the
 // same way the Swift guard does, since a blown budget risks the whole activity, not just this
 // one field.

@@ -72,3 +72,24 @@ test('downscaleImage returns null when even the quality floor is over budget', a
 
   assert.equal(result, null);
 });
+
+test('downscaleImage picks the best quality that fits, not just the first one under budget', async () => {
+  // Regression test for a real bug: the quality-search loop used to start at 0.5 and return
+  // immediately, so a photo that already fit comfortably at 0.5 (most tiny 36-40px thumbnails do)
+  // never got a chance at 0.6-0.95 -- routinely leaving 60%+ of the already-safe, already-budgeted
+  // byte allowance unused and looking needlessly pixelated for no size-budget benefit. A real
+  // 1280x720 camera frame downscaled to 40px measured 466B at quality 0.5 vs 906B at quality
+  // 0.95 (maxBytes 1300) -- so "does the loop settle for the old low-quality byte count when a
+  // much better one still fits" is a real, previously-failing assertion, not a hypothetical one.
+  const source = await noiseImage(400, 400);
+  const lowQualityReference = await sharp(source).resize(40, 40).jpeg({ quality: 50 }).toBuffer();
+  const generousBudget = lowQualityReference.length * 3;
+
+  const result = await downscaleImage(source, { maxDimension: 40, maxBytes: generousBudget });
+
+  assert.ok(result.length <= generousBudget);
+  assert.ok(
+    result.length > lowQualityReference.length,
+    `expected a higher-quality (larger) result than the old quality=0.5 starting point (${lowQualityReference.length}B) when ${generousBudget}B was available, got ${result.length}B`,
+  );
+});
