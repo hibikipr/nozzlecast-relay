@@ -19,8 +19,11 @@ class BambuddyClient {
     return response.json();
   }
 
-  async _getBinary(path) {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`);
+  async _getBinary(path, { authenticated = false } = {}) {
+    const response = await this.fetchImpl(
+      `${this.baseUrl}${path}`,
+      authenticated ? { headers: { Authorization: `Bearer ${this.apiKey}` } } : undefined,
+    );
     if (!response.ok) {
       throw new Error(`Bambuddy request to ${path} failed with status ${response.status}`);
     }
@@ -40,11 +43,18 @@ class BambuddyClient {
     return this._get(`/api/v1/printers/${printerId}/status`);
   }
 
-  // Mints a short-lived camera stream token, a separate credential from the main API key
-  // (confirmed live: the main API key's Authorization header isn't even needed on the two
-  // endpoints below once you have this token, just the token itself as a query param). Not
-  // cacheable long-term -- mint one immediately before each cover/snapshot fetch rather than
-  // reusing an old one.
+  // Mints a short-lived camera stream token, a separate credential from the main API key, needed
+  // for camera/snapshot below (confirmed live: the main API key's Authorization header alone
+  // isn't accepted there, only this token as a query param). Not cacheable long-term -- mint one
+  // immediately before each snapshot fetch rather than reusing an old one.
+  //
+  // cover() below used to go through this same token too, but Bambuddy changed what it requires
+  // (its own OpenAPI description now says: "It used to require camera:view by way of the
+  // camera-stream token, which is a different question from 'may this user see what is on the
+  // plate' (#3025)") -- it now wants printers:read, the same permission every other printer read
+  // in this client already needs, and just the main API key's Authorization header satisfies that
+  // (confirmed live: a plain Bearer request succeeds with no token param at all). That's why
+  // cover() takes no token argument below despite still fetching one for snapshot.
   async mintCameraStreamToken() {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/printers/camera/stream-token`, {
       method: 'POST',
@@ -58,10 +68,11 @@ class BambuddyClient {
     return token;
   }
 
-  // GET /api/v1/printers/{id}/cover?token=... -> the sliced-plate preview render (PNG), static
-  // for the whole job.
-  async cover(printerId, streamToken) {
-    return this._getBinary(`/api/v1/printers/${printerId}/cover?token=${streamToken}`);
+  // GET /api/v1/printers/{id}/cover -> the sliced-plate preview render (PNG), static for the
+  // whole job. Bearer-authenticated like every other non-image endpoint in this client -- see the
+  // comment on mintCameraStreamToken() above for why this doesn't take a stream token.
+  async cover(printerId) {
+    return this._getBinary(`/api/v1/printers/${printerId}/cover`, { authenticated: true });
   }
 
   // GET /api/v1/printers/{id}/camera/snapshot?token=... -> a live camera frame (JPEG).

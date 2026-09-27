@@ -56,13 +56,14 @@ async function main() {
   const LIVE_SNAPSHOT_MAX_DIMENSION = 40;
   const LIVE_SNAPSHOT_MAX_BYTES = 1300;
 
-  // Mints a fresh (short-lived, not cacheable) camera stream token and fetches+downscales one of
-  // Bambuddy's two camera-backed images. Lets a downscale-to-null (still over budget at the
-  // quality floor) come back as null same as any other failure -- both mean "no image field this
-  // update," never a thrown error that would abort the whole enrichment attempt.
+  // Fetches+downscales one of Bambuddy's two camera-backed images. `fetchRaw` owns whatever
+  // credential its endpoint actually needs -- cover() is Bearer-authenticated like the rest of
+  // the client, cameraSnapshot() needs its own fresh stream token, minted by the caller (see
+  // bambuddyClient.js for why these two differ). Lets a downscale-to-null (still over budget at
+  // the quality floor) come back as null same as any other failure -- both mean "no image field
+  // this update," never a thrown error that would abort the whole enrichment attempt.
   const fetchDownscaledCameraImage = async (bambuddyPrinterId, fetchRaw, { maxDimension, maxBytes }) => {
-    const streamToken = await bambuddyClient.mintCameraStreamToken();
-    const raw = await fetchRaw(bambuddyPrinterId, streamToken);
+    const raw = await fetchRaw(bambuddyPrinterId);
     const downscaled = await downscaleImage(raw, { maxDimension, maxBytes });
     return downscaled ? downscaled.toString('base64') : null;
   };
@@ -127,7 +128,7 @@ async function main() {
       try {
         enrichment.coverImage = await fetchDownscaledCameraImage(
           bambuddyPrinterId,
-          (id, token) => bambuddyClient.cover(id, token),
+          (id) => bambuddyClient.cover(id),
           { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
         );
         if (enrichment.coverImage) await activityTokenStore.setCoverImage(printerID, enrichment.coverImage);
@@ -141,7 +142,7 @@ async function main() {
       try {
         enrichment.liveSnapshot = await fetchDownscaledCameraImage(
           bambuddyPrinterId,
-          (id, token) => bambuddyClient.cameraSnapshot(id, token),
+          async (id) => bambuddyClient.cameraSnapshot(id, await bambuddyClient.mintCameraStreamToken()),
           { maxDimension: LIVE_SNAPSHOT_MAX_DIMENSION, maxBytes: LIVE_SNAPSHOT_MAX_BYTES },
         );
       } catch (error) {

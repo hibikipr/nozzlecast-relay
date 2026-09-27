@@ -75,20 +75,21 @@ test('mintCameraStreamToken() throws on a non-2xx response', async () => {
   await assert.rejects(client.mintCameraStreamToken(), /status 500/);
 });
 
-test('cover(id, token) GETs the cover endpoint with the token as a query param and returns raw bytes', async () => {
+test('cover(id) GETs the cover endpoint with bearer auth (no token param) and returns raw bytes', async () => {
   const calls = [];
   const fakeBytes = Buffer.from([1, 2, 3, 4]);
-  const fetchImpl = async (url) => {
-    calls.push(url);
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
     return { ok: true, status: 200, arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength) };
   };
   const client = new BambuddyClient({ baseUrl: 'https://bambuddy.example.com', apiKey: 'bb_test', fetchImpl });
 
-  const result = await client.cover(2, 'streamtok123');
+  const result = await client.cover(2);
 
   assert.ok(Buffer.isBuffer(result));
   assert.deepEqual(result, fakeBytes);
-  assert.equal(calls[0], 'https://bambuddy.example.com/api/v1/printers/2/cover?token=streamtok123');
+  assert.equal(calls[0].url, 'https://bambuddy.example.com/api/v1/printers/2/cover');
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer bb_test');
 });
 
 test('cameraSnapshot(id, token) GETs the snapshot endpoint with the token as a query param', async () => {
@@ -110,5 +111,5 @@ test('cover() throws on a non-2xx response', async () => {
   const fetchImpl = async () => ({ ok: false, status: 404 });
   const client = new BambuddyClient({ baseUrl: 'https://bambuddy.example.com', apiKey: 'bb_test', fetchImpl });
 
-  await assert.rejects(client.cover(2, 'badtoken'), /status 404/);
+  await assert.rejects(client.cover(2), /status 404/);
 });
