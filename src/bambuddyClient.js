@@ -2,16 +2,24 @@
 // Activity -- printer identity and live status. Mirrors
 // only the fields NozzleCast's own BambuddyAPIClient.swift actually uses for this, not
 // Bambuddy's full status shape.
+//
+// Every request carries a timeout. Without one, a single hung Bambuddy response (its camera
+// endpoints in particular are known to stall) held a poller tick open indefinitely, and every
+// enrichment/push queued behind it with it.
+const DEFAULT_TIMEOUT_MS = 10000;
+
 class BambuddyClient {
-  constructor({ baseUrl, apiKey, fetchImpl = fetch }) {
+  constructor({ baseUrl, apiKey, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS }) {
     this.baseUrl = baseUrl;
     this.apiKey = apiKey;
     this.fetchImpl = fetchImpl;
+    this.timeoutMs = timeoutMs;
   }
 
   async _get(path) {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       headers: { Authorization: `Bearer ${this.apiKey}` },
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
       throw new Error(`Bambuddy request to ${path} failed with status ${response.status}`);
@@ -22,7 +30,10 @@ class BambuddyClient {
   async _getBinary(path, { authenticated = false } = {}) {
     const response = await this.fetchImpl(
       `${this.baseUrl}${path}`,
-      authenticated ? { headers: { Authorization: `Bearer ${this.apiKey}` } } : undefined,
+      {
+        ...(authenticated ? { headers: { Authorization: `Bearer ${this.apiKey}` } } : {}),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      },
     );
     if (!response.ok) {
       throw new Error(`Bambuddy request to ${path} failed with status ${response.status}`);
@@ -60,6 +71,7 @@ class BambuddyClient {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
       body: '{}',
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
       throw new Error(`Bambuddy stream-token request failed with status ${response.status}`);
@@ -77,7 +89,7 @@ class BambuddyClient {
 
   // GET /api/v1/printers/{id}/camera/snapshot?token=... -> a live camera frame (JPEG).
   async cameraSnapshot(printerId, streamToken) {
-    return this._getBinary(`/api/v1/printers/${printerId}/camera/snapshot?token=${streamToken}`);
+    return this._getBinary(`/api/v1/printers/${printerId}/camera/snapshot?token=${encodeURIComponent(streamToken)}`);
   }
 }
 

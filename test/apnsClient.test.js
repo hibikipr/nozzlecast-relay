@@ -189,3 +189,49 @@ test('send() reports apnsId as null when APNs returns no apns-id header', async 
 
   assert.equal(result.apnsId, null);
 });
+
+test('send() reuses one HTTP/2 session per host instead of connecting per push', async () => {
+  const { connect, calls } = fakeConnectReturning({ status: 200 });
+  let connects = 0;
+  const countingConnect = (origin) => { connects += 1; return connect(origin); };
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect: countingConnect });
+
+  await client.send({ token: 'a', environment: 'production', payload: {} });
+  await client.send({ token: 'b', environment: 'production', payload: {} });
+  await client.send({ token: 'c', environment: 'sandbox', payload: {} });
+
+  assert.equal(calls.length, 3);
+  assert.equal(connects, 2);
+});
+
+test('send() reconnects after a session goes away', async () => {
+  const sessions = [];
+  const { connect } = fakeConnectReturning({ status: 200 });
+  const trackingConnect = (origin) => { const s = connect(origin); sessions.push(s); return s; };
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect: trackingConnect });
+
+  await client.send({ token: 'a', environment: 'production', payload: {} });
+  sessions[0].emit('goaway');
+  await client.send({ token: 'b', environment: 'production', payload: {} });
+
+  assert.equal(sessions.length, 2);
+});
+
+test('send() rejects and drops the session when a stream never responds', async () => {
+  let destroyed = false;
+  const connect = () => {
+    const session = new EventEmitter();
+    session.destroy = () => { destroyed = true; };
+    session.request = () => {
+      const stream = new EventEmitter();
+      stream.end = () => {};
+      return stream;
+    };
+    return session;
+  };
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect, requestTimeoutMs: 20 });
+
+  await assert.rejects(client.send({ token: 'a', environment: 'production', payload: {} }), /timed out/);
+  assert.equal(destroyed, true);
+  assert.equal(client.sessions.size, 0);
+});

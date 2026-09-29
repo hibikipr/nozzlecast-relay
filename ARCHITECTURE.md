@@ -143,6 +143,24 @@ poll of any printer only establishes a baseline (no callback fires), so a relay 
 doesn't produce a spurious duplicate push-to-start. Transitions are inherently deduped by
 construction — a callback only fires when the state actually changes.
 
+Keeping that dedupe true in practice takes three more rules (2026-09-29 audit):
+
+- **Ticks never overlap.** `setInterval` fires regardless of whether the previous tick finished, and
+  a tick awaiting a slow push hasn't recorded the new state yet — so an overlapping tick
+  re-classified the same transition and fired it again (reproduced: two push-to-starts for one
+  print). A tick that finds another in flight is skipped.
+- **State is recorded before callbacks run**, so a callback that throws can't leave the old state
+  behind to be re-classified (and re-sent) on every following tick.
+- **`connected: false` readings are ignored.** Bambuddy keeps answering `/status` after losing the
+  printer's MQTT connection, and the state it reports then isn't a real reading; a mid-print Wi-Fi
+  blip could otherwise read as a fresh `start`. The baseline stays at the last real state.
+
+**Baseline cleanup after a restart.** The one thing the baseline-only first poll can miss is a print
+that *ended* while the relay was down — no transition is ever observed, so no end push. If the first
+reading of a printer is inactive and devices are still registered for its activity
+(`onBaselineInactive`), the relay sends that end push then. Every end push clears the printer's
+token list afterwards, which is what makes "tokens still registered" mean "end still owed".
+
 **State values** (`gcode_state`, passed straight through from the underlying Bambu Lab MQTT field):
 `RUNNING`, `PAUSE`, `FINISH`, `FAILED` — all four confirmed live.
 
@@ -156,7 +174,10 @@ construction — a callback only fires when the state actually changes.
 | any → `FINISH` | end | `Complete` |
 | any → `FAILED`, with a confirmed qualifying HMS issue just prior | end | `Failed` |
 | any → `FAILED`, no qualifying issue (includes plain user-stop) | end | `Stopped` |
-| no other event, ≥ `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` since the last one, still active | update | current state's label |
+| no other event, ≥ `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` since the last push, still active | update | current state's label |
+
+Any transition push resets the correction clock — it already carried a full, fresh content-state,
+so a correction on the same tick would just spend `liveactivitiesd` budget on identical content.
 
 `resume` (`PAUSE → RUNNING`) must be checked before the generic start check — a real bug caught
 by a unit test before ever running live.
@@ -254,10 +275,11 @@ piggybacking on the poll trigger's correction-interval tick (~once a minute at t
 way to see exactly when a registration arrived, only bound it to a ~1-minute window via the
 "no token" log lines disappearing.
 
-**Known tradeoff, not yet mitigated**: a genuinely offline/unreachable device on a long print will
-get a wake retry on every correction tick for the print's entire duration. Worth widening
-`LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` if that proves too chatty against APNs in practice — no cap
-on retry count/duration has been added.
+**Capped at 6 retries per print** (`MAX_WAKE_RETRIES_PER_PRINT` in `index.js`, reset on the next
+observed start). Uncapped, a printer whose token never arrives — Live Activities off on every
+device, or a print already running when the relay started, so no push-to-start ever went out — got a
+background push on every correction tick for the whole print, and iOS rations background pushes per
+app. No wake is sent for an `end` with no token at all: the print is over.
 
 ## `/register-device` never called at all (2026-09-04/05)
 
@@ -530,7 +552,14 @@ within ~30s on foreground regardless of this value.
   timeout, network) logs and leaves the token in place — the next trigger retries naturally, no
   dead-letter queue.
 - **Single printer's Bambuddy fetch failure**: logged, that printer's tick is
-  skipped — does not affect other printers or crash the poll loop.
+  skipped — does not affect other printers or crash the poll loop. The same now holds for *any*
+  error while polling one printer (a malformed status, a callback that throws, e.g. a failed disk
+  write) — each printer is isolated, and a tick can no longer reject unhandled, which crashed the
+  process.
+- **Timeouts everywhere**: Bambuddy requests abort after 10s, APNs requests after 15s. Neither had
+  one, so a single stalled camera fetch or APNs stream held the whole poll loop open.
+- **APNs connections are long-lived**: one HTTP/2 session per APNs host, reused across pushes (as
+  Apple asks), dropped and reopened after an error, timeout or GOAWAY.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
   background wake (see above), rather than a bare skip.
 - **A dead activity token drops only that device.** A 400/410 removes that one token from the
@@ -635,13 +664,15 @@ reasoning as every other real-device-only path in this document.
 
 - Running both trigger sources simultaneously isn't guarded against — fine since this deploy runs
   only one at a time.
-- Background wake retry (see above) has no cap on retry count/duration against a genuinely
-  offline device for the length of a long print.
 - `DELETE /register`/`DELETE /register-device` aren't wired into NozzleCast (no sign-out concept
   yet) — dead tokens are pruned reactively via APNs error responses instead.
-- A print starting while the app happens to already be foreground could still produce a duplicate
-  Live Activity card, since the NSE's own (foreground-only-effective) `Activity.request()` attempt
-  was left in place as a comparison point. Not yet removed.
+- A print starting while the app happens to already be foreground used to produce a duplicate
+  Live Activity card (the app created one locally before this relay's push-to-start arrived, and
+  `startPrint()` then dropped the local one's token). NozzleCast now waits 90s for the relay's
+  activity before creating one itself when a relay is configured.
+- The poller's own state is in memory: a relay restart mid-print re-baselines without a new
+  push-to-start (by design), and relies on `onBaselineInactive` only for prints that ended while
+  it was down.
 - The `remaining_time`-stuck-at-a-low-value case (see above) has no detection/mitigation beyond the
   near-completion-progress floor; a print hitting that specific pathological data pattern again
   would show a perpetually-near estimate rather than `null` or a corrected value.

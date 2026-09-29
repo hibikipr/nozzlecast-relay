@@ -1,9 +1,17 @@
+const crypto = require('node:crypto');
 const express = require('express');
 const { normalizedID } = require('./parsing');
 
+// Constant-time comparison, so response timing can't be used to guess the secret byte by byte.
+// Both sides are hashed first because timingSafeEqual requires equal-length inputs.
+function secretsMatch(provided, expected) {
+  const digest = (value) => crypto.createHash('sha256').update(value).digest();
+  return crypto.timingSafeEqual(digest(provided), digest(expected));
+}
+
 function requireAuth(authSecret) {
   return (req, res, next) => {
-    if (req.get('authorization') !== `Bearer ${authSecret}`) {
+    if (!secretsMatch(req.get('authorization') || '', `Bearer ${authSecret}`)) {
       return res.status(401).json({ error: 'unauthorized' });
     }
     next();

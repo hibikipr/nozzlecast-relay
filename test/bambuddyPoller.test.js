@@ -279,3 +279,107 @@ test('two different printers are tracked independently', async () => {
   assert.equal(cb.calls.start.length, 1);
   assert.equal(cb.calls.start[0].name, 'Sam P1S');
 });
+
+test('overlapping ticks never fire the same transition twice', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'IDLE', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const slowStart = async (ctx) => {
+    cb.calls.start.push(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb, onStart: slowStart });
+
+  await poller.tick(); // baseline: IDLE
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [] });
+  await Promise.all([poller.tick(), poller.tick()]);
+
+  assert.equal(cb.calls.start.length, 1);
+});
+
+test('a throwing callback for one printer neither rejects the tick nor skips other printers', async () => {
+  const client = fakeClient({
+    printers: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }],
+    statusByPrinterId: { 1: { state: 'IDLE', hms_errors: [] }, 2: { state: 'IDLE', hms_errors: [] } },
+  });
+  const cb = recordingCallbacks();
+  const onStart = async (ctx) => {
+    cb.calls.start.push(ctx);
+    if (ctx.name === 'A') throw new Error('ENOSPC');
+  };
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb, onStart });
+
+  await poller.tick();
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [] });
+  await poller.tick(); // must resolve, not reject
+  await poller.tick(); // and must not re-fire A's start on the next tick
+
+  assert.deepEqual(cb.calls.start.map((ctx) => ctx.name), ['A', 'B']);
+});
+
+test('malformed responses are skipped instead of throwing', async () => {
+  const cb = recordingCallbacks();
+  const nonArray = { printers: async () => ({ detail: 'oops' }), status: async () => ({}) };
+  await new BambuddyPoller({ bambuddyClient: nonArray, intervalMs: 1000, correctionIntervalMs: 60000, ...cb }).tick();
+
+  const nullStatus = fakeClient({ printers: [{ id: 1, name: 'A' }], statusByPrinterId: { 1: null } });
+  await new BambuddyPoller({ bambuddyClient: nullStatus, intervalMs: 1000, correctionIntervalMs: 60000, ...cb }).tick();
+
+  const oddHms = fakeClient({ printers: [{ id: 1, name: 'A' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: {} } } });
+  const poller = new BambuddyPoller({ bambuddyClient: oddHms, intervalMs: 1000, correctionIntervalMs: 0, ...cb });
+  await poller.tick();
+  await poller.tick();
+  assert.equal(cb.calls.correction.length, 1);
+});
+
+test('a disconnected reading mid-print does not turn the reconnect into a new start', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'A' }], statusByPrinterId: { 1: { state: 'RUNNING', connected: true, hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+
+  await poller.tick(); // baseline: RUNNING
+  client.status = async () => ({ state: 'IDLE', connected: false, hms_errors: [] });
+  await poller.tick();
+  client.status = async () => ({ state: 'RUNNING', connected: true, hms_errors: [] });
+  await poller.tick();
+
+  assert.equal(cb.calls.start.length, 0);
+});
+
+test('a transition push counts as the interval\'s correction -- no second push on the same tick', async () => {
+  let clock = 0;
+  const client = fakeClient({ printers: [{ id: 1, name: 'A' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, now: () => clock, ...cb });
+
+  await poller.tick(); // baseline
+  clock = 120000; // correction overdue
+  client.status = async () => ({ state: 'PAUSE', hms_errors: [] });
+  await poller.tick();
+  assert.equal(cb.calls.pause.length, 1);
+  assert.equal(cb.calls.correction.length, 0);
+
+  clock = 150000; // only 30s since the pause push
+  await poller.tick();
+  assert.equal(cb.calls.correction.length, 0);
+
+  clock = 180001;
+  await poller.tick();
+  assert.equal(cb.calls.correction.length, 1);
+});
+
+test('the first reading of an inactive printer calls onBaselineInactive, an active one does not', async () => {
+  const client = fakeClient({
+    printers: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }],
+    statusByPrinterId: { 1: { state: 'FINISH', hms_errors: [] }, 2: { state: 'RUNNING', hms_errors: [] } },
+  });
+  const cb = recordingCallbacks();
+  const baseline = [];
+  const poller = new BambuddyPoller({
+    bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb, onBaselineInactive: async (ctx) => baseline.push(ctx),
+  });
+
+  await poller.tick();
+  await poller.tick();
+
+  assert.deepEqual(baseline.map((ctx) => ctx.printerID), ['a']);
+});

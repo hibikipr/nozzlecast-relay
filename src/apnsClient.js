@@ -2,11 +2,22 @@ const http2 = require('node:http2');
 
 const REMOVABLE_STATUSES = new Set([400, 410]);
 
+// A send that hasn't produced a complete response by then is abandoned. Without a bound, one
+// stalled stream held the whole poller tick (and every push queued behind it) open indefinitely.
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+
 class ApnsClient {
-  constructor({ authProvider, topic, connect = http2.connect }) {
+  constructor({ authProvider, topic, connect = http2.connect, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS }) {
     this.authProvider = authProvider;
     this.topic = topic;
     this.connect = connect;
+    this.requestTimeoutMs = requestTimeoutMs;
+    // One long-lived HTTP/2 session per APNs host. Apple asks providers to keep connections open
+    // rather than opening one per notification -- a fresh TCP+TLS handshake per push was both
+    // slow and the connect/disconnect pattern APNs documents it may treat as a denial-of-service
+    // attempt. A session is dropped from here the moment it errors, closes or receives GOAWAY, and
+    // the next send simply opens a new one.
+    this.sessions = new Map(); // origin -> session
   }
 
   // APNs constrains apns-priority by push type: a `background` push (apns-push-type: background,
@@ -19,45 +30,82 @@ class ApnsClient {
     return pushType === 'background' ? '5' : '10';
   }
 
+  _sessionFor(origin) {
+    const existing = this.sessions.get(origin);
+    if (existing && !existing.closed && !existing.destroyed) return existing;
+
+    const session = this.connect(origin);
+    const evict = () => {
+      if (this.sessions.get(origin) === session) this.sessions.delete(origin);
+    };
+    session.on('error', evict);
+    session.on('goaway', evict);
+    session.on('close', evict);
+    // An idle session must not keep the process alive on shutdown.
+    session.unref?.();
+    this.sessions.set(origin, session);
+    return session;
+  }
+
+  _discard(session) {
+    for (const [origin, cached] of this.sessions) {
+      if (cached === session) this.sessions.delete(origin);
+    }
+    session.destroy?.();
+  }
+
+  // Closes every open session -- for a clean shutdown.
+  close() {
+    for (const session of this.sessions.values()) session.close?.();
+    this.sessions.clear();
+  }
+
   async send({ token, environment, payload, pushType = 'liveactivity', topic = this.topic }) {
     const origin = environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com';
 
-    const session = this.connect(origin);
-    let sessionErrored = false;
+    const session = this._sessionFor(origin);
     try {
       return await this._sendOnSession(session, { token, payload, pushType, topic });
     } catch (error) {
-      sessionErrored = true;
+      // A session-level failure (or a timed-out stream) says nothing good about the connection:
+      // tear it down so the next send starts from a fresh one instead of reusing a broken channel.
+      this._discard(session);
       throw error;
-    } finally {
-      if (sessionErrored) {
-        session.destroy();
-      } else {
-        session.close();
-      }
     }
   }
 
   _sendOnSession(session, { token, payload, pushType, topic }) {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const settleReject = (error) => {
+      let timer = null;
+      let stream = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        session.off?.('error', settleReject);
+      };
+      function settleReject(error) {
         if (settled) return;
         settled = true;
+        cleanup();
         reject(error);
-      };
+      }
       const settleResolve = (value) => {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve(value);
       };
 
       session.on('error', settleReject);
+      timer = setTimeout(() => {
+        stream?.close?.(http2.constants.NGHTTP2_CANCEL);
+        settleReject(new Error(`APNs request timed out after ${this.requestTimeoutMs}ms`));
+      }, this.requestTimeoutMs);
 
       const body = JSON.stringify(payload);
-      const stream = session.request({
+      stream = session.request({
         ':method': 'POST',
         ':path': `/3/device/${token}`,
         'apns-push-type': pushType,
