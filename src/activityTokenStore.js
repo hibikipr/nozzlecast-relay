@@ -125,6 +125,17 @@ class ActivityTokenStore {
     await this.save();
   }
 
+  // Called once an end push has gone out: the activity is over, so nothing should be pushed to
+  // its tokens again -- in particular not a second end after a relay restart (see index.js's
+  // onBaselineInactive), which is how a still-populated list after the end is interpreted.
+  // startedAt/printerName are kept for logging; the next startPrint() resets everything anyway.
+  async clearTokens(printerID) {
+    const existing = this.entries.get(printerID);
+    if (!existing || existing.tokens.length === 0) return;
+    this.entries.set(printerID, { ...existing, tokens: [] });
+    await this.save();
+  }
+
   list() {
     return Array.from(this.entries.values());
   }

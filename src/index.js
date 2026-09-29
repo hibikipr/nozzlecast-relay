@@ -227,6 +227,15 @@ async function main() {
   // stale with no way to retry until something unrelated (e.g. foregrounding the app) happened
   // to trigger PrintLiveActivityManager.sync on its own. Naturally self-limiting: it only fires
   // while sendActivityUpdate finds no token, and stops the moment /register-activity lands.
+  //
+  // Capped per print: a printer whose activity token never arrives (Live Activities turned off on
+  // every device, or a print that was already running when the relay started, so no push-to-start
+  // ever went out) would otherwise get a background push on every correction interval for the
+  // entire print. iOS rations background pushes per app, so that spam eats into the budget of the
+  // wakes that matter. The cap resets on the next observed print start.
+  const MAX_WAKE_RETRIES_PER_PRINT = 6;
+  const wakeRetriesByPrinter = new Map(); // printerID -> retries sent since the print started
+
   const sendBackgroundWake = async (name) => {
     const wakePayload = buildBackgroundWakePayload();
     for (const entry of deviceTokenStore.list()) {
@@ -313,7 +322,19 @@ async function main() {
     const activity = activityTokenStore.get(printerID);
     const deviceTokens = activityTokenStore.tokensFor(printerID);
     if (!activity || deviceTokens.length === 0) {
-      console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake`);
+      // Nothing to end: waking the app for a print that is already over can't produce a token
+      // anyone will ever push to.
+      if (event === 'end') {
+        console.log(`No activity token registered for printer "${name}", skipping end push`);
+        return;
+      }
+      const retries = wakeRetriesByPrinter.get(printerID) ?? 0;
+      if (retries >= MAX_WAKE_RETRIES_PER_PRINT) {
+        console.log(`No activity token registered for printer "${name}", skipping ${event} push -- background wake retry limit (${MAX_WAKE_RETRIES_PER_PRINT}) reached for this print`);
+        return;
+      }
+      wakeRetriesByPrinter.set(printerID, retries + 1);
+      console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake (${retries + 1}/${MAX_WAKE_RETRIES_PER_PRINT})`);
       await sendBackgroundWake(name);
       return;
     }
@@ -390,6 +411,8 @@ async function main() {
         console.error(`Activity ${event} send threw for printer "${name}" (token ${device.token}):`, error);
       }
     }
+
+    if (event === 'end') await activityTokenStore.clearTokens(printerID);
   };
 
   // Polls Bambuddy's own API directly for start/pause/resume/finish/failed state transitions,
@@ -406,6 +429,7 @@ async function main() {
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
         onStart: async ({ printerID, name, status, issueSeverity, issueCount }) => {
+          wakeRetriesByPrinter.delete(printerID);
           await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
           await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount });
         },
@@ -447,6 +471,20 @@ async function main() {
             issueSeverity,
             issueCount,
           }),
+        // First reading after a (re)start with the printer idle/finished: if devices are still
+        // registered for its activity, the print ended while the relay was down and no end push
+        // ever went out. Send it now rather than leaving the Live Activity up until iOS expires it.
+        onBaselineInactive: async ({ printerID, name, status }) => {
+          if (activityTokenStore.tokensFor(printerID).length === 0) return;
+          console.log(`Printer "${name}" is ${status.state} at startup with an activity still registered -- sending the end push it missed`);
+          await sendActivityUpdate({
+            event: 'end',
+            stateLabel: status.state === 'FINISH' ? 'Complete' : 'Stopped',
+            printerID,
+            name,
+            prefetchedStatus: status,
+          });
+        },
   });
   poller.start();
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
@@ -461,6 +499,8 @@ async function main() {
   const shutdown = () => {
     console.log('Shutting down...');
     poller.stop();
+    apnsClients.sandbox.close();
+    apnsClients.production.close();
     server.close(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);

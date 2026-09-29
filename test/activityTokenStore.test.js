@@ -271,3 +271,20 @@ test('load() migrates a legacy entry whose token was already cleared', async () 
 
   assert.deepEqual(store.tokensFor('vich2c'), []);
 });
+
+test('clearTokens() empties the device list but keeps the print record', async () => {
+  const dir = await require('node:fs/promises').mkdtemp(require('node:path').join(require('node:os').tmpdir(), 'nozzlecast-relay-test-'));
+  const file = require('node:path').join(dir, 'activity-tokens.json');
+  const store = new ActivityTokenStore(file);
+  await store.load();
+  await store.startPrint({ printerID: 'p', printerName: 'P', startedAt: '2026-01-01T00:00:00.000Z' });
+  await store.registerToken({ printerID: 'p', token: 't1', environment: 'production' });
+
+  await store.clearTokens('p');
+
+  assert.deepEqual(store.tokensFor('p'), []);
+  assert.equal(store.get('p').startedAt, '2026-01-01T00:00:00.000Z');
+  const reloaded = new ActivityTokenStore(file);
+  await reloaded.load();
+  assert.deepEqual(reloaded.tokensFor('p'), []);
+});
