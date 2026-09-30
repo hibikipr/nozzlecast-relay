@@ -77,6 +77,7 @@ class ActivityTokenStore {
       startedAt,
       tokens: [],
       coverImage: null,
+      coverImageFailures: 0,
     });
     await this.save();
   }
@@ -96,6 +97,7 @@ class ActivityTokenStore {
       printerName: existing ? existing.printerName : null,
       startedAt: existing ? existing.startedAt : null,
       coverImage: existing ? existing.coverImage : null,
+      coverImageFailures: existing?.coverImageFailures ?? 0,
       tokens: [...others, { token, environment, registeredAt: new Date().toISOString() }],
     });
     await this.save();
@@ -110,6 +112,20 @@ class ActivityTokenStore {
     if (!existing) return;
     this.entries.set(printerID, { ...existing, coverImage: coverImageBase64 });
     await this.save();
+  }
+
+  // Counts a failed coverImage attempt for this print (a fetch error such as Bambuddy's 404 for a
+  // job with no cached render, or a render that won't fit the byte budget even at the quality
+  // floor). index.js stops retrying once this reaches its limit -- the cover is static per job, so
+  // a job that keeps failing is almost always a job that has none, and retrying cost a Bambuddy
+  // request plus a decode on every single update for the rest of the print. Reset by startPrint().
+  async recordCoverImageFailure(printerID) {
+    const existing = this.entries.get(printerID);
+    if (!existing) return 0;
+    const coverImageFailures = (existing.coverImageFailures ?? 0) + 1;
+    this.entries.set(printerID, { ...existing, coverImageFailures });
+    await this.save();
+    return coverImageFailures;
   }
 
   // Called when a push to one device comes back dead (400/410): drops just that device, leaving

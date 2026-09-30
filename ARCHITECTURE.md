@@ -410,12 +410,20 @@ misfire on normal data).
 
 ### Images (`coverImage` / `liveSnapshot`)
 
-Bambuddy: `POST /api/v1/printers/camera/stream-token` mints a short-lived token, then
-`GET /{id}/cover?token=...` (plate-preview render, static per job) and
-`GET /{id}/camera/snapshot?token=...` (live camera frame). `coverImage` is fetched once per print
-and cached on `activityTokenStore`'s per-printer record (checked before ever re-fetching);
-`liveSnapshot` is fetched fresh on every update (meant to look "live"), never on push-to-start
-(would spend a stream-token mint on an image discarded unused).
+Bambuddy: `GET /{id}/cover` (plate-preview render, static per job) is Bearer-authenticated with
+the API key like every other read (#23 -- Bambuddy moved it from the camera stream token to
+`printers:read`); `GET /{id}/camera/snapshot?token=...` (live camera frame) still needs a
+short-lived token from `POST /api/v1/printers/camera/stream-token`. `coverImage` is fetched once
+per print and cached on `activityTokenStore`'s per-printer record (checked before ever
+re-fetching); `liveSnapshot` is fetched fresh on every update (meant to look "live"), never on
+push-to-start (would spend a stream-token mint on an image discarded unused).
+
+**A missing cover is given up on after 3 attempts per print** (`coverImageCache.js`,
+counted in the record's `coverImageFailures`, reset by `startPrint()`). Bambuddy answers `/cover`
+with a 404 for a job it has no cached render for, and nothing about that changes mid-print --
+retrying cost a request and a decode on every update. More than one attempt because a render can
+be briefly missing right at print start. A render that won't fit the byte budget counts as a
+failed attempt too.
 
 **Hard budget constraint**: ActivityKit's real budget for the whole serialized content-state is
 close to 4KB, and a `Data` field costs ~33% more once base64-encoded. Going over doesn't fail
@@ -429,8 +437,9 @@ gracefully — the system **ends the Live Activity outright** rather than droppi
 
 Algorithm: `scale = min(maxDimension / max(width, height), 1)` (never upscale) → resize at a render
 scale of 1 (no device-scale multiplier to fight in Node, unlike the Swift side's
-`UIGraphicsImageRenderer` pitfall) → encode JPEG at quality 0.5 → while over `maxBytes` and quality
-> 0.1, reduce quality by 0.1 and re-encode → if still over budget at the quality floor, omit the
+`UIGraphicsImageRenderer` pitfall) → encode JPEG at quality 0.95 → while over `maxBytes` and quality
+> 0.1, reduce quality by 0.05 and re-encode (#24 -- starting at 0.5 left most of the budget
+unused) → if still over budget at the quality floor, omit the
 image for that update entirely rather than exceeding the cap. Verified `sharp` actually works at
 runtime inside the real `node:20-alpine` (musl) Docker build, not just `npm install` succeeding.
 Measured worst case (both images at their exact byte caps, plus a real ~54-char `jobName`): 3389
