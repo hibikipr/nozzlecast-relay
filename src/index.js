@@ -10,6 +10,7 @@ const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
 const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('./bambuddyEnrichment');
 const { downscaleImage } = require('./imageDownscale');
+const { resolveCoverImage } = require('./coverImageCache');
 const { createServer } = require('./server');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
@@ -121,22 +122,16 @@ async function main() {
       return null;
     }
 
-    const cachedCoverImage = activityTokenStore.get(printerID)?.coverImage;
-    if (cachedCoverImage) {
-      enrichment.coverImage = cachedCoverImage;
-    } else {
-      try {
-        enrichment.coverImage = await fetchDownscaledCameraImage(
-          bambuddyPrinterId,
-          (id) => bambuddyClient.cover(id),
-          { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
-        );
-        if (enrichment.coverImage) await activityTokenStore.setCoverImage(printerID, enrichment.coverImage);
-      } catch (error) {
-        console.error(`coverImage fetch failed for printer "${name}", sending this update without it:`, error);
-        enrichment.coverImage = null;
-      }
-    }
+    enrichment.coverImage = await resolveCoverImage({
+      activityTokenStore,
+      printerID,
+      name,
+      fetchCover: () => fetchDownscaledCameraImage(
+        bambuddyPrinterId,
+        (id) => bambuddyClient.cover(id),
+        { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
+      ),
+    });
 
     if (includeLiveSnapshot) {
       try {

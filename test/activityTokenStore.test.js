@@ -288,3 +288,23 @@ test('clearTokens() empties the device list but keeps the print record', async (
   await reloaded.load();
   assert.deepEqual(reloaded.tokensFor('p'), []);
 });
+
+test('recordCoverImageFailure() counts per print, survives registration, and resets on startPrint()', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozzlecast-relay-test-'));
+  const file = path.join(dir, 'activity-tokens.json');
+  const store = new ActivityTokenStore(file);
+  await store.load();
+
+  assert.equal(await store.recordCoverImageFailure('p'), 0); // untracked printer: no-op
+  await store.startPrint({ printerID: 'p', printerName: 'P', startedAt: '2026-01-01T00:00:00.000Z' });
+  assert.equal(await store.recordCoverImageFailure('p'), 1);
+  await store.registerToken({ printerID: 'p', token: 't1', environment: 'production' });
+  assert.equal(await store.recordCoverImageFailure('p'), 2);
+
+  const reloaded = new ActivityTokenStore(file);
+  await reloaded.load();
+  assert.equal(reloaded.get('p').coverImageFailures, 2);
+
+  await store.startPrint({ printerID: 'p', printerName: 'P', startedAt: '2026-01-02T00:00:00.000Z' });
+  assert.equal(store.get('p').coverImageFailures, 0);
+});
