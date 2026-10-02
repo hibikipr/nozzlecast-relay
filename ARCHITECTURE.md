@@ -210,12 +210,16 @@ timer/progress display (the app side's job, not this relay's) doesn't drift far 
 `HmsIssueDebouncer.observe()` (requires a code to be confirmed present/absent across N consecutive
 polls before trusting a change — `hms_errors` reporting is itself flaky, confirmed live: the same
 code observed present/absent/present across polls seconds apart with nothing about the printer
-changing) and then `badgeFromEntries()` (Bambuddy's own confirmed severity scale — see
-`HMSErrorModal.tsx`'s `getSeverityInfo`: 1=Fatal, 2=Serious, 3=Warning, 4+/unknown=Info),
-collapsing to two tiers: `"error"` (severity ≤ 2), `"warning"` (severity 3), or `null`/`null`
-(severity 4+/Info, or nothing confirmed active) — Info-tier codes must never surface a badge at
-all, confirmed live that a genuine severity-5 code was firing false "Error" activities while
-Bambuddy's own dashboard showed the printer green/healthy. A fresh `start` transition resets the
+changing) and then `badgeFromEntries()`, which reads `severity` as Bambu's own alert level:
+0 invalid, 1 error (task stopped), 2 warning (task paused), 3 notification (no impact). That is
+what Bambuddy reports since v1.2.5.7 (#2728); before it, Bambuddy decoded `severity` from the
+fault's Part ID byte, so the number was effectively unrelated to the fault (a fault that paused
+an H2C read 6 and showed as "Info"). Collapsed to two tiers by what the printer did: `"error"`
+(level 1, stopped), `"warning"` (level 2, paused), or `null`/`null` (notification, invalid, or
+nothing confirmed active). Notifications never badge — the incident that broke an earlier naive
+"any new code = Error" version was a standing advisory firing false "Error" activities while
+Bambuddy's own dashboard showed the printer healthy. Against a Bambuddy older than v1.2.5.7 the
+levels are the old, unreliable numbers, so badges there are best-effort. A fresh `start` transition resets the
 debouncer's baseline for that printer. The badge is `null`/`null` on `finish`/`failed` — it means
 nothing once the print has ended. An earlier version of this feature diffed raw `hms_errors`
 presence directly (any newly-appeared code → `stateLabel: "Error"`); that path has been removed
