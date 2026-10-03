@@ -6,6 +6,16 @@ const REMOVABLE_STATUSES = new Set([400, 410]);
 // stalled stream held the whole poller tick (and every push queued behind it) open indefinitely.
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
+// Errors that mean "the connection was already dead", as opposed to a timeout or a real failure.
+const STALE_SESSION_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ERR_HTTP2_GOAWAY_SESSION',
+  'ERR_HTTP2_INVALID_SESSION',
+  'ERR_HTTP2_SESSION_ERROR',
+  'ERR_HTTP2_STREAM_ERROR',
+]);
+
 class ApnsClient {
   constructor({ authProvider, topic, connect = http2.connect, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS }) {
     this.authProvider = authProvider;
@@ -18,6 +28,9 @@ class ApnsClient {
     // attempt. A session is dropped from here the moment it errors, closes or receives GOAWAY, and
     // the next send simply opens a new one.
     this.sessions = new Map(); // origin -> session
+    // Sessions that have completed at least one request, so a later failure on one means it went
+    // stale rather than never worked.
+    this.served = new WeakSet();
   }
 
   // APNs constrains apns-priority by push type: a `background` push (apns-push-type: background,
@@ -67,10 +80,35 @@ class ApnsClient {
 
     const session = this._sessionFor(origin);
     try {
-      return await this._sendOnSession(session, { token, payload, pushType, topic });
+      const result = await this._sendOnSession(session, { token, payload, pushType, topic });
+      this.served.add(session);
+      return result;
     } catch (error) {
       // A session-level failure (or a timed-out stream) says nothing good about the connection:
       // tear it down so the next send starts from a fresh one instead of reusing a broken channel.
+      this._discard(session);
+
+      // APNs closes an idle connection without telling us, and the first push after that hits the
+      // dead socket (ECONNRESET). Between prints that first push is the push-to-start, so dropping
+      // it meant a device never got its Live Activity until the app was opened by hand (seen
+      // 2026-10-03: one of two devices missed the print-start push, the other was fine). Retry
+      // once on a fresh session -- but only when the failed session had already served requests,
+      // i.e. it went stale. A brand-new session that fails is a real network problem, and a
+      // timeout or an APNs rejection is not a stale socket, so neither is retried.
+      if (this.served.has(session) && STALE_SESSION_ERROR_CODES.has(error?.code)) {
+        return this._sendOnFreshSession(origin, { token, payload, pushType, topic });
+      }
+      throw error;
+    }
+  }
+
+  async _sendOnFreshSession(origin, { token, payload, pushType, topic }) {
+    const session = this._sessionFor(origin);
+    try {
+      const result = await this._sendOnSession(session, { token, payload, pushType, topic });
+      this.served.add(session);
+      return result;
+    } catch (error) {
       this._discard(session);
       throw error;
     }
