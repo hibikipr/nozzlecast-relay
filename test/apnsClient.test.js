@@ -235,3 +235,77 @@ test('send() rejects and drops the session when a stream never responds', async 
   assert.equal(destroyed, true);
   assert.equal(client.sessions.size, 0);
 });
+
+// Each connect() yields a session that handles its requests per the next scripted behavior:
+// 'ok' -> 200, 'reset' -> the stream errors with ECONNRESET, 'hang' -> never responds.
+function scriptedConnect(scripts) {
+  const sessions = [];
+  const connect = () => {
+    const behaviors = [...(scripts[sessions.length] ?? ['ok'])];
+    const session = new EventEmitter();
+    session.destroyed = false;
+    session.destroy = () => { session.destroyed = true; };
+    session.close = () => {};
+    session.request = () => {
+      const behavior = behaviors.shift() ?? 'ok';
+      const stream = new EventEmitter();
+      stream.end = () => {
+        if (behavior === 'hang') return;
+        process.nextTick(() => {
+          if (behavior === 'reset') {
+            stream.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+            return;
+          }
+          stream.emit('response', { ':status': 200 });
+          stream.emit('end');
+        });
+      };
+      return stream;
+    };
+    sessions.push(session);
+    return session;
+  };
+  return { connect, sessions };
+}
+
+// APNs silently closes an idle connection; the first push after that (the print-start
+// push-to-start) hit the dead socket with ECONNRESET and was dropped, so a device never got its
+// Live Activity until the app was opened by hand.
+test('send() retries once on a fresh session when a previously-working session has gone stale', async () => {
+  const { connect, sessions } = scriptedConnect([['ok', 'reset']]);
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect });
+
+  await client.send({ token: 'a', environment: 'production', payload: {} });
+  const result = await client.send({ token: 'b', environment: 'production', payload: {} });
+
+  assert.equal(result.ok, true);
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[0].destroyed, true);
+});
+
+test('send() does not retry when a brand-new session fails -- that is a real network problem', async () => {
+  const { connect, sessions } = scriptedConnect([['reset']]);
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect });
+
+  await assert.rejects(client.send({ token: 'a', environment: 'production', payload: {} }), /ECONNRESET/);
+  assert.equal(sessions.length, 1);
+});
+
+test('send() does not retry a timeout on a previously-working session', async () => {
+  const { connect, sessions } = scriptedConnect([['ok', 'hang']]);
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect, requestTimeoutMs: 20 });
+
+  await client.send({ token: 'a', environment: 'production', payload: {} });
+  await assert.rejects(client.send({ token: 'b', environment: 'production', payload: {} }), /timed out/);
+  assert.equal(sessions.length, 1);
+});
+
+test('send() gives up after one retry instead of looping when the fresh session also fails', async () => {
+  const { connect, sessions } = scriptedConnect([['ok', 'reset'], ['reset']]);
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 't', connect });
+
+  await client.send({ token: 'a', environment: 'production', payload: {} });
+  await assert.rejects(client.send({ token: 'b', environment: 'production', payload: {} }), /ECONNRESET/);
+  assert.equal(sessions.length, 2);
+  assert.equal(client.sessions.size, 0);
+});
