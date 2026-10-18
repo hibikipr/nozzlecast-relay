@@ -14,6 +14,7 @@ const { resolveCoverImage } = require('./coverImageCache');
 const { createServer } = require('./server');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
+const { WakeRetryPolicy } = require('./wakeRetryPolicy');
 
 // Full push payloads are logged verbatim for debugging (e.g. checking attributes-type against
 // the app's actual Swift struct byte-for-byte -- APNs doesn't validate that field, so a mismatch
@@ -214,22 +215,20 @@ async function main() {
 
   // Sends the background content-available wake push to every registered device token -- see
   // buildBackgroundWakePayload. Called once at push-to-start, and then retried from
-  // sendActivityUpdate's no-token branch below on every subsequent attempt (including the
-  // correction-interval tick) for as long as a printer has no activity token registered yet.
-  // iOS's delivery of a "background" push is discretionary and can be delayed with no
-  // relay-visible signal -- confirmed live: an H2C print's token didn't land for ~37.5 minutes
-  // because the one-shot wake at print-start was evidently delayed by iOS, leaving the activity
-  // stale with no way to retry until something unrelated (e.g. foregrounding the app) happened
-  // to trigger PrintLiveActivityManager.sync on its own. Naturally self-limiting: it only fires
-  // while sendActivityUpdate finds no token, and stops the moment /register-activity lands.
+  // sendActivityUpdate for as long as fewer devices have registered an activity token than
+  // accepted the push-to-start. iOS's delivery of a "background" push is discretionary and can be
+  // delayed with no relay-visible signal -- confirmed live: an H2C print's token didn't land for
+  // ~37.5 minutes because the one-shot wake at print-start was evidently delayed by iOS, leaving
+  // the activity stale with no way to retry until something unrelated (e.g. foregrounding the app)
+  // happened to trigger PrintLiveActivityManager.sync on its own. Self-limiting: it stops the
+  // moment every expected device's /register-activity lands.
   //
-  // Capped per print: a printer whose activity token never arrives (Live Activities turned off on
-  // every device, or a print that was already running when the relay started, so no push-to-start
-  // ever went out) would otherwise get a background push on every correction interval for the
-  // entire print. iOS rations background pushes per app, so that spam eats into the budget of the
-  // wakes that matter. The cap resets on the next observed print start.
-  const MAX_WAKE_RETRIES_PER_PRINT = 6;
-  const wakeRetriesByPrinter = new Map(); // printerID -> retries sent since the print started
+  // When to retry (partial registrations, backoff spacing, the per-print cap) is decided by
+  // WakeRetryPolicy -- see wakeRetryPolicy.js for why each of those is needed. The cap matters
+  // because a device whose token never arrives (Live Activities turned off, or a print that was
+  // already running when the relay started, so no push-to-start ever went out) would otherwise
+  // get a background push all print long, and iOS rations background pushes per app.
+  const wakeRetries = new WakeRetryPolicy();
 
   const sendBackgroundWake = async (name) => {
     const wakePayload = buildBackgroundWakePayload();
@@ -278,6 +277,9 @@ async function main() {
       stageDetail: filterStageDetail(enrichment?.stageDetail, 'Printing'),
     });
     console.log(`Push-to-start payload for printer "${name}": ${Buffer.byteLength(JSON.stringify(payload))} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
+    // How many devices APNs accepted the push-to-start for -- the number of activity tokens the
+    // wake retry waits for (see WakeRetryPolicy).
+    let acceptedDevices = 0;
     for (const entry of tokenStore.list()) {
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
@@ -288,6 +290,7 @@ async function main() {
         } else if (!result.ok) {
           console.error(`Push-to-start send failed (status ${result.status}) for token ${entry.token}: ${result.body}`);
         } else {
+          acceptedDevices += 1;
           console.log(`Push-to-start accepted by APNs for printer "${name}" (token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
@@ -299,6 +302,7 @@ async function main() {
     // needing a foreground launch — see buildBackgroundWakePayload for why this is no longer
     // believed to be load-bearing for activity visibility.
     await sendBackgroundWake(name);
+    return acceptedDevices;
   };
 
   // Updates or ends an existing Live Activity directly via its own per-activity push token,
@@ -323,13 +327,16 @@ async function main() {
         console.log(`No activity token registered for printer "${name}", skipping end push`);
         return;
       }
-      const retries = wakeRetriesByPrinter.get(printerID) ?? 0;
-      if (retries >= MAX_WAKE_RETRIES_PER_PRINT) {
-        console.log(`No activity token registered for printer "${name}", skipping ${event} push -- background wake retry limit (${MAX_WAKE_RETRIES_PER_PRINT}) reached for this print`);
+      const retry = wakeRetries.check(printerID, 0);
+      if (!retry) {
+        const why = wakeRetries.capReached(printerID)
+          ? `background wake retry limit (${wakeRetries.maxRetries}) reached for this print`
+          : 'next background wake retry not due yet';
+        console.log(`No activity token registered for printer "${name}", skipping ${event} push -- ${why}`);
         return;
       }
-      wakeRetriesByPrinter.set(printerID, retries + 1);
-      console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake (${retries + 1}/${MAX_WAKE_RETRIES_PER_PRINT})`);
+      wakeRetries.recordWake(printerID);
+      console.log(`No activity token registered for printer "${name}", skipping ${event} push -- retrying background wake (${retry.attempt}/${retry.maxRetries})`);
       await sendBackgroundWake(name);
       return;
     }
@@ -407,7 +414,20 @@ async function main() {
       }
     }
 
-    if (event === 'end') await activityTokenStore.clearTokens(printerID);
+    if (event === 'end') {
+      await activityTokenStore.clearTokens(printerID);
+      return;
+    }
+
+    // Some devices registered but not all of them: the ones above got their update, and the
+    // missing ones get another wake once it's due. Counted after the sends so a token dropped as
+    // dead just now counts as missing.
+    const retry = wakeRetries.check(printerID, activityTokenStore.tokensFor(printerID).length);
+    if (retry) {
+      wakeRetries.recordWake(printerID);
+      console.log(`Retrying background wake for printer "${name}" (${retry.reason}, attempt ${retry.attempt}/${retry.maxRetries})`);
+      await sendBackgroundWake(name);
+    }
   };
 
   // Polls Bambuddy's own API directly for start/pause/resume/finish/failed state transitions,
@@ -424,9 +444,15 @@ async function main() {
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
         onStart: async ({ printerID, name, status, issueSeverity, issueCount }) => {
-          wakeRetriesByPrinter.delete(printerID);
+          // Reset the previous print's retry state before anything here can throw (a failed
+          // activity-tokens.json write, say) -- otherwise a print whose onStart failed would
+          // inherit the last print's used-up retry cap and never get a wake retry at all. The
+          // real expected-device count replaces the unknown one once push-to-start has gone out.
+          wakeRetries.startPrint(printerID, null);
           await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
-          await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount });
+          const acceptedDevices = await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount });
+          wakeRetries.startPrint(printerID, acceptedDevices);
+          console.log(`Push-to-start accepted for ${acceptedDevices} device(s) for printer "${name}" -- waiting for that many activity tokens`);
         },
         onPause: async ({ printerID, name, status, issueSeverity, issueCount }) =>
           sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),

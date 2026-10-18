@@ -255,7 +255,9 @@ entirely, not just disabled, superseded by the debounced/severity-filtered badge
 ## Trigger: update/end (activity update/end)
 
 1. Look up `activity-tokens.json` by `printerID`. **If there's no token registered yet, log and
-   retry the background wake push** (see below) rather than just skipping silently.
+   retry the background wake push** once it's due (see below) rather than just skipping silently.
+   If some devices have registered but fewer than accepted the push-to-start, the update goes to
+   the registered ones and the missing ones get a wake retry once it's due.
 2. Build the content-state reusing the *tracked* `startedAt` (not "now" — every push carries the
    complete content-state, not a diff, and the print's real start time doesn't change mid-print).
 3. Send to the same APNs topic/push-type as push-to-start (Apple distinguishes by `aps.event`, not
@@ -279,11 +281,31 @@ piggybacking on the poll trigger's correction-interval tick (~once a minute at t
 way to see exactly when a registration arrived, only bound it to a ~1-minute window via the
 "no token" log lines disappearing.
 
-**Capped at 6 retries per print** (`MAX_WAKE_RETRIES_PER_PRINT` in `index.js`, reset on the next
-observed start). Uncapped, a printer whose token never arrives — Live Activities off on every
+**Capped at 6 retries per print** (now `WakeRetryPolicy` in `wakeRetryPolicy.js`, reset on the
+next observed start). Uncapped, a printer whose token never arrives — Live Activities off on every
 device, or a print already running when the relay started, so no push-to-start ever went out — got a
 background push on every correction tick for the whole print, and iOS rations background pushes per
 app. No wake is sent for an `end` with no token at all: the print is over.
+
+### Partial registrations and backoff (2026-10-18)
+
+Two gaps in the retry above, both from one real print. Push-to-start went to two devices at 11:03:12;
+one registered its activity token at 11:03:15, the other not until its app was opened at 11:21:52.
+That device's Live Activity sat frozen at its push-to-start state for 18.6 minutes:
+
+- **Only zero registrations triggered a retry.** One device registering read as "done", so the
+  missing one was never woken again. The retry is now due while fewer devices have registered than
+  APNs accepted the push-to-start for (`expectedDevices`, logged at start). For a print already
+  running when the relay started, that count is unknown and only the zero case is detected.
+- **The cap was spent in ~3 minutes.** At this deploy's 15s poll / 20s correction interval a retry
+  went out on every ~30s tick, while late tokens have landed 18.6 and 37.5 minutes after the start.
+  Retries now back off exponentially from the push-to-start wake (1, 2, 4, 8, 16, 32 minutes), so the
+  same 6 wakes cover about the first hour.
+
+Known limits: `tokens.json` is keyed by token, not device, so a stale push-to-start token that APNs
+still accepts inflates `expectedDevices` and spends the full cap each print (the wake is a broadcast
+to every device token). And a device whose activity token rotated mid-print counts twice, which can
+hide a missing device.
 
 ## `/register-device` never called at all (2026-09-04/05)
 
@@ -574,7 +596,9 @@ within ~30s on foreground regardless of this value.
 - **APNs connections are long-lived**: one HTTP/2 session per APNs host, reused across pushes (as
   Apple asks), dropped and reopened after an error, timeout or GOAWAY.
 - **No registered activity token for an update/end event**: not an error — logged and retries the
-  background wake (see above), rather than a bare skip.
+  background wake once it's due (see above), rather than a bare skip. Fewer tokens than devices that
+  accepted the push-to-start also gets a wake retry, alongside the update to the devices that did
+  register.
 - **A dead activity token drops only that device.** A 400/410 removes that one token from the
   printer's list; every other device watching the same print keeps receiving updates.
 - **A 2xx from APNs is acceptance, not application.** Nothing the relay can observe distinguishes
