@@ -35,3 +35,11 @@ test('classifyTransition never re-fires finish/failed once already in that state
   assert.equal(classifyTransition('FINISH', 'FINISH'), null);
   assert.equal(classifyTransition('FAILED', 'FAILED'), null);
 });
+
+test('classifyTransition ends an active print that leaves for any non-terminal state', () => {
+  assert.equal(classifyTransition('RUNNING', 'IDLE'), 'stopped');
+  assert.equal(classifyTransition('PAUSE', 'IDLE'), 'stopped');
+  assert.equal(classifyTransition('RUNNING', 'PREPARE'), 'stopped');
+  assert.equal(classifyTransition('RUNNING', 'SOMETHING_NEW'), 'stopped');
+  assert.equal(classifyTransition('IDLE', 'PREPARE'), null, 'not active before, so nothing to end');
+});

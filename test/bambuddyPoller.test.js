@@ -383,3 +383,74 @@ test('the first reading of an inactive printer calls onBaselineInactive, an acti
 
   assert.deepEqual(baseline.map((ctx) => ctx.printerID), ['a']);
 });
+
+test('RUNNING -> IDLE ends the print through onFailed', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Vic H2C' }], statusByPrinterId: { 1: { state: 'RUNNING', progress: 40, hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+  await poller.tick();
+  client.status = async () => ({ state: 'IDLE', progress: 0, hms_errors: [] });
+  await poller.tick();
+  assert.equal(cb.calls.failed.length, 1);
+  assert.equal(cb.calls.failed[0].priorProgress, 0.4);
+});
+
+test('every callback ctx carries the Bambuddy printer id', async () => {
+  const client = fakeClient({ printers: [{ id: 7, name: 'Vic H2C' }], statusByPrinterId: { 7: { state: 'IDLE', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const poller = new BambuddyPoller({ bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...cb });
+  await poller.tick();
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [] });
+  await poller.tick();
+  assert.equal(cb.calls.start[0].bambuddyPrinterId, 7);
+});
+
+test('a short disconnect mid-print does not end the activity; a long one does, once', async () => {
+  let now = 0;
+  const client = fakeClient({ printers: [{ id: 1, name: 'Vic H2C' }], statusByPrinterId: { 1: { state: 'RUNNING', progress: 50, hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  const disconnected = [];
+  const poller = new BambuddyPoller({
+    bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60 * 60 * 1000, ...cb,
+    now: () => now, disconnectEndMs: 15 * 60 * 1000, onDisconnected: async (ctx) => disconnected.push(ctx),
+  });
+  await poller.tick(); // baseline RUNNING
+
+  client.status = async () => ({ state: 'RUNNING', connected: false, hms_errors: [] });
+  now = 60 * 1000; await poller.tick();
+  now = 10 * 60 * 1000; await poller.tick();
+  assert.equal(disconnected.length, 0, 'under the threshold');
+
+  client.status = async () => ({ state: 'RUNNING', progress: 55, hms_errors: [] });
+  now = 11 * 60 * 1000; await poller.tick(); // reconnected: clock resets
+  client.status = async () => ({ state: 'RUNNING', connected: false, hms_errors: [] });
+  now = 12 * 60 * 1000; await poller.tick();
+  now = 26 * 60 * 1000; await poller.tick();
+  assert.equal(disconnected.length, 0, 'the earlier disconnect must not count toward this one');
+
+  now = 27 * 60 * 1000; await poller.tick();
+  now = 40 * 60 * 1000; await poller.tick();
+  assert.equal(disconnected.length, 1);
+  assert.equal(disconnected[0].priorProgress, 0.55);
+  assert.equal(disconnected[0].bambuddyPrinterId, 1);
+
+  // Back online and still printing: a fresh start, i.e. a new activity.
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [] });
+  now = 41 * 60 * 1000; await poller.tick();
+  assert.equal(cb.calls.start.length, 1);
+});
+
+test('a disconnected idle printer never triggers onDisconnected', async () => {
+  let now = 0;
+  const client = fakeClient({ printers: [{ id: 1, name: 'Vic H2C' }], statusByPrinterId: { 1: { state: 'IDLE', hms_errors: [] } } });
+  const disconnected = [];
+  const poller = new BambuddyPoller({
+    bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60000, ...recordingCallbacks(),
+    now: () => now, disconnectEndMs: 1000, onDisconnected: async (ctx) => disconnected.push(ctx),
+  });
+  await poller.tick();
+  client.status = async () => ({ state: 'IDLE', connected: false, hms_errors: [] });
+  now = 5000; await poller.tick();
+  now = 10000; await poller.tick();
+  assert.equal(disconnected.length, 0);
+});

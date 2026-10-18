@@ -221,3 +221,27 @@ test('POST /register-activity from two devices keeps both, under the one printer
     ['new-token', 'old-token'],
   );
 });
+
+test('a store write that fails answers 500 instead of escaping as an unhandled rejection', async () => {
+  const failing = { upsert: async () => { throw new Error('EROFS: read-only file system'); } };
+  for (const [route, deps] of [
+    ['/register', { tokenStore: failing }],
+    ['/register-device', { deviceTokenStore: failing }],
+  ]) {
+    const app = createServer({ ...deps, authSecret: 'secret123' });
+    const res = await request(app)
+      .post(route)
+      .set('Authorization', 'Bearer secret123')
+      .send({ token: 'abc', environment: 'production' });
+    assert.equal(res.status, 500, route);
+    assert.deepEqual(res.body, { error: 'internal error' });
+  }
+
+  const activityTokenStore = { registerToken: async () => { throw new Error('ENOSPC'); }, tokensFor: () => [] };
+  const app = createServer({ activityTokenStore, authSecret: 'secret123' });
+  const res = await request(app)
+    .post('/register-activity')
+    .set('Authorization', 'Bearer secret123')
+    .send({ token: 'abc', printerID: 'vich2c', environment: 'production' });
+  assert.equal(res.status, 500);
+});

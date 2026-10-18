@@ -1,4 +1,3 @@
-const fs = require('node:fs/promises');
 const { AtomicJsonFile } = require('./atomicJsonFile');
 
 class TokenStore {
@@ -10,8 +9,8 @@ class TokenStore {
 
   async load() {
     try {
-      const raw = await fs.readFile(this.filePath, 'utf8');
-      const entries = JSON.parse(raw);
+      // Falls back to the .bak copy if the main file is corrupt -- see AtomicJsonFile.read().
+      const entries = (await this._file.read()) ?? [];
       this.tokens = new Map(entries.map((entry) => [entry.token, entry]));
     } catch (error) {
       if (error.code === 'ENOENT') {

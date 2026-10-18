@@ -27,15 +27,24 @@ const QUALITY_FLOOR = 0.1;
 // budget at the 0.1 floor, returns null (not a smaller-than-requested image) -- fails closed the
 // same way the Swift guard does, since a blown budget risks the whole activity, not just this
 // one field.
+//
+// The source is decoded and resized ONCE, to raw pixels, and only the JPEG encode of that tiny
+// raw image repeats per quality step. Each step used to decode and resize the full camera frame
+// all over again -- up to 18 full-frame decodes for one image when nothing fit early.
 async function downscaleImage(buffer, { maxDimension, maxBytes }) {
   const { width, height } = await sharp(buffer).metadata();
   const scale = Math.min(maxDimension / Math.max(width, height), 1);
   const targetWidth = Math.max(1, Math.round(width * scale));
   const targetHeight = Math.max(1, Math.round(height * scale));
 
+  const { data: pixels, info } = await sharp(buffer)
+    .resize(targetWidth, targetHeight)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const rawInput = { raw: { width: info.width, height: info.height, channels: info.channels } };
+
   for (let quality = STARTING_QUALITY; quality >= QUALITY_FLOOR - 1e-9; quality -= QUALITY_STEP) {
-    const encoded = await sharp(buffer)
-      .resize(targetWidth, targetHeight)
+    const encoded = await sharp(pixels, rawInput)
       .jpeg({ quality: Math.round(quality * 100) })
       .toBuffer();
     if (encoded.length <= maxBytes) return encoded;

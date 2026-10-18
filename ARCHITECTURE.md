@@ -174,7 +174,16 @@ token list afterwards, which is what makes "tokens still registered" mean "end s
 | any → `FINISH` | end | `Complete` |
 | any → `FAILED`, with a confirmed qualifying HMS issue just prior | end | `Failed` |
 | any → `FAILED`, no qualifying issue (includes plain user-stop) | end | `Stopped` |
-| no other event, ≥ `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` since the last push, still active | update | current state's label |
+| `RUNNING`/`PAUSE` → any other non-active state (`IDLE`, `PREPARE`, unrecognized) | end | `Failed`/`Stopped`, as for `FAILED` |
+| still active, but Bambuddy reports it disconnected for ≥ 15 min | end | `Disconnected` |
+| no other event, ≥ `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` since the last push, still active | update (`apns-priority` 5) | current state's label |
+
+A print that left `RUNNING`/`PAUSE` for anything other than `FINISH`/`FAILED` used to classify as
+no event at all: corrections stopped (the printer was no longer active) and the Live Activity sat
+frozen on "Printing" until iOS expired it. Likewise a printer Bambuddy lost mid-print was skipped
+on every tick and never ended. After 15 disconnected minutes the activity is now ended with
+`Disconnected`; if the printer comes back still printing, that reads as a fresh start and a new
+activity goes out.
 
 Any transition push resets the correction clock — it already carried a full, fresh content-state,
 so a correction on the same tick would just spend `liveactivitiesd` budget on identical content.
@@ -370,6 +379,28 @@ though Apple doesn't document a number and this hasn't been independently confir
 - Minimize redundant push-triggering during a debugging session (repeated replay runs, redundant
   redeploy-triggered pushes, etc.) — every one spends budget that a real print later that day may
   need.
+
+## Audit fixes (2026-10-18)
+
+- **Corrections at `apns-priority` 5.** Every Live Activity push was priority 10. This deploy runs
+  `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS=20000` against a 15s poll, i.e. a correction about every
+  30s -- hundreds of high-priority pushes per device per print against the on-device budget above.
+  Routine corrections now go at 5 (Apple's guidance for updates that aren't time-sensitive);
+  start, pause, resume and end stay at 10.
+- **Token removal only for a dead token.** Any 400 used to remove the token, but most 400s
+  (`BadPriority`, `BadTopic`, `TopicDisallowed`, `InvalidPushType`, ...) are about the request, so
+  a single config or payload mistake could wipe every device's tokens. Now only 410, or 400 with
+  `BadDeviceToken`/`DeviceTokenNotForTopic`.
+- **Async route errors answer 500.** Express 4 doesn't catch a rejected async handler, and Node
+  exits on the unhandled rejection, so one failed token-file write took the relay down.
+- **Durable token files.** Writes are fsynced before the rename and the previous file is kept as
+  `<file>.bak`; a corrupt file loads from the backup instead of starting empty.
+- **Wakes only to environments with a push-to-start token.** Stale sandbox device tokens from
+  development builds are still accepted by APNs, so they're never pruned, but they can't be
+  running this print's Live Activity. Live data at the time: 9 device tokens woken, 3 needed.
+- **Enrichment uses the poller's printer id**, so a printer re-added in Bambuddy under the same
+  name no longer keeps hitting a stale cached id; and image downscaling resizes once and repeats
+  only the JPEG encode.
 
 ## Enrichment (Bambuddy telemetry)
 

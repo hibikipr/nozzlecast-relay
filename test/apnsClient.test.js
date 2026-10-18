@@ -309,3 +309,40 @@ test('send() gives up after one retry instead of looping when the fresh session 
   assert.equal(sessions.length, 2);
   assert.equal(client.sessions.size, 0);
 });
+
+test('send() keeps the token for a 400 that is about the request, not the token', async () => {
+  for (const reason of ['BadPriority', 'BadTopic', 'TopicDisallowed', 'InvalidPushType', 'MissingTopic']) {
+    const { connect } = fakeConnectReturning({ status: 400, responseBody: JSON.stringify({ reason }) });
+    const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+    const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+    assert.equal(result.ok, false);
+    assert.equal(result.shouldRemoveToken, false, `${reason} must not remove the token`);
+  }
+});
+
+test('send() marks a 400 DeviceTokenNotForTopic response for removal', async () => {
+  const { connect } = fakeConnectReturning({ status: 400, responseBody: '{"reason":"DeviceTokenNotForTopic"}' });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+  const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+  assert.equal(result.shouldRemoveToken, true);
+});
+
+test('send() keeps the token for a 400 with an unparseable body', async () => {
+  const { connect } = fakeConnectReturning({ status: 400, responseBody: 'not json' });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+  const result = await client.send({ token: 'devtoken123', environment: 'production', payload: { aps: {} } });
+  assert.equal(result.shouldRemoveToken, false);
+});
+
+test('send() uses apns-priority 5 for a liveactivity push that asks for it, 10 by default', async () => {
+  const { connect, calls } = fakeConnectReturning({ status: 200 });
+  const client = new ApnsClient({ authProvider: fakeAuthProvider(), topic: 'com.example.NozzleCast.push-type.liveactivity', connect });
+  await client.send({ token: 'a', environment: 'production', payload: { aps: {} }, priority: 5 });
+  await client.send({ token: 'b', environment: 'production', payload: { aps: {} } });
+  assert.equal(calls[0].headers['apns-priority'], '5');
+  assert.equal(calls[1].headers['apns-priority'], '10');
+});
+
+test('a background push stays at priority 5 even if 10 is asked for', () => {
+  assert.equal(ApnsClient.priorityFor('background', 10), '5');
+});

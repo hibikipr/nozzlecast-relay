@@ -97,3 +97,20 @@ test('load() reads back tokens written by a previous store instance', async () =
   assert.equal(second.list().length, 1);
   assert.equal(second.list()[0].token, 'abc123');
 });
+
+test('load() recovers the previous token list from .bak when tokens.json is corrupt', async () => {
+  const fsp = require('node:fs/promises');
+  const osm = require('node:os');
+  const pathm = require('node:path');
+  const dir = await fsp.mkdtemp(pathm.join(osm.tmpdir(), 'nozzlecast-relay-test-'));
+  const file = pathm.join(dir, 'tokens.json');
+  const store = new TokenStore(file);
+  await store.load();
+  await store.upsert({ token: 'abc', environment: 'production' });
+  await store.upsert({ token: 'def', environment: 'production' });
+  await fsp.writeFile(file, '');
+
+  const reloaded = new TokenStore(file);
+  await reloaded.load();
+  assert.deepEqual(reloaded.list().map((entry) => entry.token), ['abc']);
+});
