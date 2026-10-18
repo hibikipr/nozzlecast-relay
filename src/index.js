@@ -34,6 +34,17 @@ function redactImagesForLogging(payload) {
   return clone;
 }
 
+// Which device tokens get a background wake: only those in an environment some push-to-start
+// token is also registered in. Old development builds leave sandbox device tokens behind that APNs
+// keeps accepting, so they're never pruned as dead -- but a sandbox device with no sandbox
+// push-to-start token can't be running a Live Activity for this print, and each wake to it still
+// spends background-push budget. With no push-to-start token at all there's nothing to filter by,
+// so every device gets the wake as before.
+function wakeTargets(pushToStartTokens, deviceTokens) {
+  const environments = new Set(pushToStartTokens.map((entry) => entry.environment));
+  return environments.size === 0 ? deviceTokens : deviceTokens.filter((entry) => environments.has(entry.environment));
+}
+
 async function main() {
   const config = loadConfig();
 
@@ -90,11 +101,17 @@ async function main() {
   // re-fetching); liveSnapshot is meant to look "live," so includeLiveSnapshot callers (progress/
   // end events) get a fresh fetch+mint every time rather than a cached one -- push-to-start omits
   // it entirely rather than spending a stream-token mint on an image that's discarded unused.
-  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false, prefetchedStatus = null } = {}) => {
+  //
+  // The poller already knows Bambuddy's numeric id for the printer it's reporting on (it just
+  // listed printers this tick), so it passes it through and the name->id cache is only the
+  // fallback. The cache alone only refreshed on a miss, so a printer re-added in Bambuddy under
+  // the same name got a new id the cache never learned, and every enrichment kept hitting the old
+  // one until the relay restarted.
+  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false, prefetchedStatus = null, bambuddyPrinterId: knownPrinterId = null } = {}) => {
     let bambuddyPrinterId;
     let enrichment;
     try {
-      bambuddyPrinterId = await printerIdCache.resolve(printerID);
+      bambuddyPrinterId = knownPrinterId ?? await printerIdCache.resolve(printerID);
       if (bambuddyPrinterId === null) return null;
 
       // BambuddyPoller already fetches a fresh status every tick to detect transitions -- reuse
@@ -232,7 +249,7 @@ async function main() {
 
   const sendBackgroundWake = async (name) => {
     const wakePayload = buildBackgroundWakePayload();
-    for (const entry of deviceTokenStore.list()) {
+    for (const entry of wakeTargets(tokenStore.list(), deviceTokenStore.list())) {
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
         const result = await client.send({
@@ -256,8 +273,8 @@ async function main() {
     }
   };
 
-  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null }) => {
-    const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus });
+  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null, bambuddyPrinterId = null }) => {
+    const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus, bambuddyPrinterId });
     const payload = buildPushToStartPayload({
       printerID,
       printerName: name,
@@ -316,7 +333,7 @@ async function main() {
   // classifier, not derived here.
   const sendActivityUpdate = async ({
     event, stateLabel, printerID, name, prefetchedStatus = null, priorProgress = null,
-    issueSeverity = null, issueCount = null,
+    issueSeverity = null, issueCount = null, bambuddyPrinterId = null, priority = null,
   }) => {
     const activity = activityTokenStore.get(printerID);
     const deviceTokens = activityTokenStore.tokensFor(printerID);
@@ -345,7 +362,7 @@ async function main() {
 
     // includeLiveSnapshot: true because this IS an update/end event -- liveSnapshot is meant to
     // look "live," so it's fetched fresh here every time rather than reused from a cache.
-    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus });
+    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus, bambuddyPrinterId });
     // No longer hardcoded to 1 for "end" -- a genuine finish naturally reads ~100% from real
     // data anyway, but a stopped/cancelled print did NOT necessarily reach 100%, and claiming it
     // did is just factually wrong (a print stopped at 60% showing "100%" on its way out).
@@ -400,7 +417,7 @@ async function main() {
     for (const device of deviceTokens) {
       try {
         const client = apnsClients[device.environment] || apnsClients.production;
-        const result = await client.send({ token: device.token, environment: device.environment, payload });
+        const result = await client.send({ token: device.token, environment: device.environment, payload, priority });
         if (result.shouldRemoveToken) {
           await activityTokenStore.removeToken(printerID, device.token);
           console.log(`Removed dead activity token (status ${result.status}) for printer "${name}" (token ${device.token})`);
@@ -443,23 +460,23 @@ async function main() {
         bambuddyClient,
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
-        onStart: async ({ printerID, name, status, issueSeverity, issueCount }) => {
+        onStart: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) => {
           // Reset the previous print's retry state before anything here can throw (a failed
           // activity-tokens.json write, say) -- otherwise a print whose onStart failed would
           // inherit the last print's used-up retry cap and never get a wake retry at all. The
           // real expected-device count replaces the unknown one once push-to-start has gone out.
           wakeRetries.startPrint(printerID, null);
           await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
-          const acceptedDevices = await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount });
+          const acceptedDevices = await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId });
           wakeRetries.startPrint(printerID, acceptedDevices);
           console.log(`Push-to-start accepted for ${acceptedDevices} device(s) for printer "${name}" -- waiting for that many activity tokens`);
         },
-        onPause: async ({ printerID, name, status, issueSeverity, issueCount }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
-        onResume: async ({ printerID, name, status, issueSeverity, issueCount }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount }),
-        onFinish: async ({ printerID, name, status, priorProgress, issueSeverity, issueCount }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, priorProgress, issueSeverity, issueCount }),
+        onPause: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId }),
+        onResume: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId }),
+        onFinish: async ({ printerID, name, status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }),
         // Bambuddy's own frontend (PrintersPage.tsx's classifyPrinterStatus) treats a bare
         // FAILED gcode_state with no HMS error attached as equivalent to FINISH for GROUPING
         // purposes (badge/dot color) -- including user-cancellations, which report as FAILED
@@ -471,7 +488,7 @@ async function main() {
         // succeeded -- for the common case (no real issue attached, i.e. a plain user stop or an
         // HMS-free failure); "Failed" is kept for when priorIssueSeverity shows a real qualifying
         // issue actually was confirmed active going into this transition.
-        onFailed: async ({ printerID, name, status, priorIssueSeverity, priorProgress, issueSeverity, issueCount }) =>
+        onFailed: async ({ printerID, name, status, priorIssueSeverity, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
           sendActivityUpdate({
             event: 'end',
             stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Stopped',
@@ -481,8 +498,15 @@ async function main() {
             priorProgress,
             issueSeverity,
             issueCount,
+            bambuddyPrinterId,
           }),
-        onCorrection: async ({ printerID, name, status, issueSeverity, issueCount }) =>
+        // Routine corrections go out at apns-priority 5. Every Live Activity push was priority 10,
+        // and at this deploy's ~30s correction cadence that is hundreds of high-priority pushes
+        // per device per print against liveactivitiesd's private on-device budget (see
+        // ARCHITECTURE.md) -- the budget whose exhaustion silently drops pushes APNs accepted,
+        // i.e. a Live Activity frozen mid-print. Apple's guidance is to use priority 5 for updates
+        // that aren't time-sensitive; start/pause/resume/end keep 10 so they land immediately.
+        onCorrection: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
           sendActivityUpdate({
             event: 'update',
             stateLabel: status.state === PAUSE ? 'Paused' : 'Printing',
@@ -491,11 +515,26 @@ async function main() {
             prefetchedStatus: status,
             issueSeverity,
             issueCount,
+            bambuddyPrinterId,
+            priority: 5,
+          }),
+        // An active printer Bambuddy has been unable to reach for the poller's disconnect window:
+        // end the activity rather than leave it frozen on its last reading. If the printer comes
+        // back still printing, the poller reports a fresh start and a new activity goes out.
+        onDisconnected: async ({ printerID, name, status, priorProgress, bambuddyPrinterId }) =>
+          sendActivityUpdate({
+            event: 'end',
+            stateLabel: 'Disconnected',
+            printerID,
+            name,
+            prefetchedStatus: status,
+            priorProgress,
+            bambuddyPrinterId,
           }),
         // First reading after a (re)start with the printer idle/finished: if devices are still
         // registered for its activity, the print ended while the relay was down and no end push
         // ever went out. Send it now rather than leaving the Live Activity up until iOS expires it.
-        onBaselineInactive: async ({ printerID, name, status }) => {
+        onBaselineInactive: async ({ printerID, name, status, bambuddyPrinterId }) => {
           if (activityTokenStore.tokensFor(printerID).length === 0) return;
           console.log(`Printer "${name}" is ${status.state} at startup with an activity still registered -- sending the end push it missed`);
           await sendActivityUpdate({
@@ -504,6 +543,7 @@ async function main() {
             printerID,
             name,
             prefetchedStatus: status,
+            bambuddyPrinterId,
           });
         },
   });
@@ -535,4 +575,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, redactImagesForLogging };
+module.exports = { main, redactImagesForLogging, wakeTargets };

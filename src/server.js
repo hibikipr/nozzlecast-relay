@@ -18,6 +18,20 @@ function requireAuth(authSecret) {
   };
 }
 
+// Express 4 doesn't catch a rejected promise from an async route handler: it escapes as an
+// unhandled rejection, and Node exits on those. So a single failed token-file write during a
+// registration (disk full, a read-only bind mount) took the whole relay down, and with it the
+// poller's in-memory print baselines and wake-retry state. Each async handler goes through this,
+// so a failure answers that one request with a 500 and the process keeps running.
+function handleAsync(route, handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch((error) => {
+      console.error(`${req.method} ${route} failed:`, error);
+      if (!res.headersSent) res.status(500).json({ error: 'internal error' });
+    });
+  };
+}
+
 function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret }) {
   const app = express();
   app.use(express.json());
@@ -26,29 +40,29 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     res.status(200).json({ ok: true });
   });
 
-  app.post('/register', requireAuth(authSecret), async (req, res) => {
+  app.post('/register', requireAuth(authSecret), handleAsync('/register', async (req, res) => {
     const { token, environment } = req.body || {};
     if (!token || !['sandbox', 'production'].includes(environment)) {
       return res.status(400).json({ error: 'invalid body: require token and environment (sandbox|production)' });
     }
     await tokenStore.upsert({ token, environment });
     res.status(200).json({ ok: true });
-  });
+  }));
 
-  app.delete('/register', requireAuth(authSecret), async (req, res) => {
+  app.delete('/register', requireAuth(authSecret), handleAsync('/register', async (req, res) => {
     const { token } = req.body || {};
     if (!token) {
       return res.status(400).json({ error: 'invalid body: require token' });
     }
     await tokenStore.remove(token);
     res.status(200).json({ ok: true });
-  });
+  }));
 
   // NozzleCast's own plain APNs device token (distinct from the Live Activity push-to-start
   // token above) — used to send a background content-available push that wakes the app so it
   // can run `PrintLiveActivityManager.sync`, the only thing that makes a push-to-start-created
   // activity actually visible/updatable anywhere. See NozzleCast's ARCHITECTURE.md.
-  app.post('/register-device', requireAuth(authSecret), async (req, res) => {
+  app.post('/register-device', requireAuth(authSecret), handleAsync('/register-device', async (req, res) => {
     const { token, environment } = req.body || {};
     if (!token || !['sandbox', 'production'].includes(environment)) {
       return res.status(400).json({ error: 'invalid body: require token and environment (sandbox|production)' });
@@ -56,16 +70,16 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     await deviceTokenStore.upsert({ token, environment });
     console.log(`Registered device token (${environment}) -- background wake now has somewhere to send`);
     res.status(200).json({ ok: true });
-  });
+  }));
 
-  app.delete('/register-device', requireAuth(authSecret), async (req, res) => {
+  app.delete('/register-device', requireAuth(authSecret), handleAsync('/register-device', async (req, res) => {
     const { token } = req.body || {};
     if (!token) {
       return res.status(400).json({ error: 'invalid body: require token' });
     }
     await deviceTokenStore.remove(token);
     res.status(200).json({ ok: true });
-  });
+  }));
 
   // The activity's own per-activity push token, observed by the app via
   // Activity<PrintActivityAttributes>.activityUpdates -> activity.pushTokenUpdates once a
@@ -77,7 +91,7 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
   // the same print, with its own independent ActivityKit token, so a second device registering
   // must not evict the first (confirmed live 2026-09-08 -- see activityTokenStore.js). Only a new
   // print, detected by the poller, clears the list.
-  app.post('/register-activity', requireAuth(authSecret), async (req, res) => {
+  app.post('/register-activity', requireAuth(authSecret), handleAsync('/register-activity', async (req, res) => {
     const { token, printerID, environment } = req.body || {};
     if (!token || !printerID || !['sandbox', 'production'].includes(environment)) {
       return res.status(400).json({ error: 'invalid body: require token, printerID, and environment (sandbox|production)' });
@@ -92,7 +106,7 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     const deviceCount = activityTokenStore.tokensFor(normalizedPrinterID).length;
     console.log(`Registered activity token for printer "${normalizedPrinterID}" (${environment}) -- ${deviceCount} device(s) now watching this print`);
     res.status(200).json({ ok: true });
-  });
+  }));
 
   return app;
 }

@@ -1,5 +1,16 @@
 const { normalizedID } = require('./parsing');
 const { classifyTransition, RUNNING, PAUSE } = require('./printerStateClassifier');
+
+// How long an ACTIVE printer may stay disconnected from Bambuddy before its Live Activity is ended.
+// Short blips are common (Wi-Fi, a Bambuddy restart) and must not end a print that never stopped;
+// a printer that stays unreachable this long would otherwise leave its activity frozen with no end
+// push at all, since a disconnected reading is never treated as a real state.
+const DEFAULT_DISCONNECT_END_MS = 15 * 60 * 1000;
+
+// Recorded as the printer's state once its activity was ended for being disconnected, so a later
+// real reading classifies against it: RUNNING again is a fresh start (new activity), anything
+// else is no event.
+const DISCONNECTED = 'DISCONNECTED';
 const { HmsIssueDebouncer } = require('./hmsIssueDebouncer');
 const { badgeFromEntries } = require('./hmsIssues');
 
@@ -30,6 +41,8 @@ class BambuddyPoller {
     onFailed,
     onCorrection,
     onBaselineInactive = async () => {},
+    onDisconnected = async () => {},
+    disconnectEndMs = DEFAULT_DISCONNECT_END_MS,
     now = () => Date.now(),
     hmsIssueDebouncer = new HmsIssueDebouncer(),
   }) {
@@ -43,11 +56,13 @@ class BambuddyPoller {
     this.onFailed = onFailed;
     this.onCorrection = onCorrection;
     this.onBaselineInactive = onBaselineInactive;
+    this.onDisconnected = onDisconnected;
+    this.disconnectEndMs = disconnectEndMs;
     this.now = now;
     this.hmsIssueDebouncer = hmsIssueDebouncer;
     this.timer = null;
     this.ticking = false;
-    this.knownPrinters = new Map(); // printerID -> { state, lastCorrectionAt, progress }
+    this.knownPrinters = new Map(); // printerID -> { state, lastCorrectionAt, progress, disconnectedSince }
   }
 
   start() {
@@ -119,8 +134,12 @@ class BambuddyPoller {
     // state it reports then is not a real reading. Treating it as one meant a mid-print Wi-Fi
     // blip could read as RUNNING -> <something> -> RUNNING, i.e. a brand-new "start": a second
     // push-to-start and a wiped token list for a print that never stopped. A disconnected reading
-    // is skipped exactly like a failed fetch -- the baseline stays at the last real state.
-    if (status.connected === false) return;
+    // is skipped exactly like a failed fetch -- the baseline stays at the last real state. Unless
+    // an active print stays disconnected past disconnectEndMs: then its activity is ended.
+    if (status.connected === false) {
+      await this._observeDisconnected(printer, printerID, status);
+      return;
+    }
 
     const progress = typeof status.progress === 'number' ? status.progress / 100 : null;
     const hmsEntries = Array.isArray(status.hms_errors) ? status.hms_errors : [];
@@ -135,7 +154,9 @@ class BambuddyPoller {
       // Activity would otherwise never get an end push. The callback decides whether anything
       // is actually outstanding for this printer.
       if (!isActive) {
-        await this.onBaselineInactive({ printerID, name: printer.name, status, issueSeverity: null, issueCount: null });
+        await this.onBaselineInactive({
+        printerID, name: printer.name, bambuddyPrinterId: printer.id, status, issueSeverity: null, issueCount: null,
+      });
       }
       return;
     }
@@ -169,7 +190,9 @@ class BambuddyPoller {
     }
     const confirmedIssues = isActive ? this.hmsIssueDebouncer.observe(printerID, hmsEntries) : [];
     const badge = badgeFromEntries(confirmedIssues);
-    const ctx = { printerID, name: printer.name, status, priorIssueSeverity, priorProgress, ...badge };
+    const ctx = {
+      printerID, name: printer.name, bambuddyPrinterId: printer.id, status, priorIssueSeverity, priorProgress, ...badge,
+    };
 
     // Any transition push already carries a full, fresh content-state, so it doubles as this
     // interval's correction. Without this a pause/resume could be followed by a correction push
@@ -187,9 +210,36 @@ class BambuddyPoller {
     else if (transition === 'pause') await this.onPause(ctx);
     else if (transition === 'resume') await this.onResume(ctx);
     else if (transition === 'finish') await this.onFinish(ctx);
-    else if (transition === 'failed') await this.onFailed(ctx);
+    // 'stopped' (an active print leaving for IDLE or any other non-terminal state) ends the same way
+    // a FAILED does -- onFailed already picks "Failed" vs "Stopped" from the prior HMS state.
+    else if (transition === 'failed' || transition === 'stopped') await this.onFailed(ctx);
     else if (sendsCorrection) await this.onCorrection(ctx);
   }
+
+  async _observeDisconnected(printer, printerID, status) {
+    const previous = this.knownPrinters.get(printerID);
+    if (!previous || (previous.state !== RUNNING && previous.state !== PAUSE)) return;
+
+    const disconnectedSince = previous.disconnectedSince ?? this.now();
+    if (this.now() - disconnectedSince < this.disconnectEndMs) {
+      if (previous.disconnectedSince == null) this.knownPrinters.set(printerID, { ...previous, disconnectedSince });
+      return;
+    }
+
+    console.log(`Bambuddy poller: printer "${printer.name}" disconnected for ${Math.round((this.now() - disconnectedSince) / 60000)} min mid-print, ending its Live Activity`);
+    // Recorded before the callback, same reason as the transition path below.
+    this.knownPrinters.set(printerID, { ...previous, state: DISCONNECTED, disconnectedSince: null });
+    await this.onDisconnected({
+      printerID,
+      name: printer.name,
+      bambuddyPrinterId: printer.id,
+      status,
+      priorProgress: previous.progress,
+      issueSeverity: null,
+      issueCount: null,
+    });
+  }
+
 }
 
-module.exports = { BambuddyPoller };
+module.exports = { BambuddyPoller, DISCONNECTED };

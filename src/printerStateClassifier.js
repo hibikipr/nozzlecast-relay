@@ -15,6 +15,7 @@ const FAILED = 'FAILED';
 
 // Classifies a state transition into one of the events the relay reacts to, or null for a
 // transition that isn't (or hasn't) changed / doesn't matter (e.g. PREPARE -> SLICING). Returns
+// 'stopped' for an active print ending in any state other than FINISH/FAILED. Returns
 // null rather than throwing for an unrecognized state string on either side -- an unexpected
 // value from Bambuddy should just result in no event this tick, not a crash.
 function classifyTransition(previousState, currentState) {
@@ -27,6 +28,13 @@ function classifyTransition(previousState, currentState) {
   if (previousState === RUNNING && currentState === PAUSE) return 'pause';
   if (currentState === FINISH && previousState !== FINISH) return 'finish';
   if (currentState === FAILED && previousState !== FAILED) return 'failed';
+  // An active print leaving for any OTHER state (IDLE, PREPARE, an unrecognized value) is still
+  // the end of that print. Without this, RUNNING -> IDLE classified as nothing, corrections
+  // stopped because the printer was no longer active, and the Live Activity sat frozen on
+  // "Printing" until iOS expired it hours later.
+  if ((previousState === RUNNING || previousState === PAUSE) && currentState !== RUNNING && currentState !== PAUSE) {
+    return 'stopped';
+  }
   return null;
 }
 

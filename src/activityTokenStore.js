@@ -1,4 +1,3 @@
-const fs = require('node:fs/promises');
 const { AtomicJsonFile } = require('./atomicJsonFile');
 
 // One entry per printer, each holding a LIST of per-activity push tokens -- one per device
@@ -39,8 +38,8 @@ class ActivityTokenStore {
 
   async load() {
     try {
-      const raw = await fs.readFile(this.filePath, 'utf8');
-      const list = JSON.parse(raw);
+      // Falls back to the .bak copy if the main file is corrupt -- see AtomicJsonFile.read().
+      const list = (await this._file.read()) ?? [];
       this.entries = new Map(list.map((entry) => [entry.printerID, migrateEntry(entry)]));
     } catch (error) {
       if (error.code === 'ENOENT') {

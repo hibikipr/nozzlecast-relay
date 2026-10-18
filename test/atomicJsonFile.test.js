@@ -49,3 +49,29 @@ test('a write that throws does not permanently wedge the queue for later writes'
   const onDisk = JSON.parse(await fs.readFile(filePath, 'utf8'));
   assert.deepEqual(onDisk, { ok: true });
 });
+
+test('each write keeps the previous version as .bak', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'atomic-json-'));
+  const file = new AtomicJsonFile(path.join(dir, 'tokens.json'));
+  await file.write(() => [{ token: 'one' }]);
+  await file.write(() => [{ token: 'two' }]);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, 'tokens.json.bak'), 'utf8')), [{ token: 'one' }]);
+  assert.deepEqual(await file.read(), [{ token: 'two' }]);
+});
+
+test('read() falls back to .bak when the main file is corrupt, and returns undefined when missing', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'atomic-json-'));
+  const file = new AtomicJsonFile(path.join(dir, 'tokens.json'));
+  assert.equal(await file.read(), undefined);
+  await file.write(() => [{ token: 'one' }]);
+  await file.write(() => [{ token: 'two' }]);
+  await fs.writeFile(path.join(dir, 'tokens.json'), ''); // what a power cut can leave behind
+  assert.deepEqual(await file.read(), [{ token: 'one' }]);
+});
+
+test('read() rethrows when both the main file and the backup are unusable', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'atomic-json-'));
+  await fs.writeFile(path.join(dir, 'tokens.json'), '{');
+  const file = new AtomicJsonFile(path.join(dir, 'tokens.json'));
+  await assert.rejects(file.read(), SyntaxError);
+});

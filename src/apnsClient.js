@@ -1,6 +1,22 @@
 const http2 = require('node:http2');
 
-const REMOVABLE_STATUSES = new Set([400, 410]);
+// Only responses that say the TOKEN itself is dead. A 400 covers far more than that -- BadPriority,
+// BadTopic, TopicDisallowed, InvalidPushType, MissingTopic, PayloadEmpty and more are all 400s
+// about the request, not the token -- and treating every 400 as "remove" meant one relay-side
+// config or payload mistake deleted every device's token in a single pass, leaving nothing to push
+// to until each app re-registered. So a 400 is removable only for these reasons; any other 400 is
+// logged and the token kept.
+const REMOVABLE_400_REASONS = new Set(['BadDeviceToken', 'DeviceTokenNotForTopic']);
+
+function shouldRemoveToken(status, body) {
+  if (status === 410) return true;
+  if (status !== 400) return false;
+  try {
+    return REMOVABLE_400_REASONS.has(JSON.parse(body)?.reason);
+  } catch {
+    return false;
+  }
+}
 
 // A send that hasn't produced a complete response by then is abandoned. Without a bound, one
 // stalled stream held the whole poller tick (and every push queued behind it) open indefinitely.
@@ -39,8 +55,13 @@ class ApnsClient {
   // so it is delivered immediately. This was previously hardcoded to '10' for every send, which
   // silently broke every background wake push the moment /register-device started working and
   // there was finally a device token to send one to.
-  static priorityFor(pushType) {
-    return pushType === 'background' ? '5' : '10';
+  //
+  // A liveactivity push may still ask for 5 explicitly (`priority` on send): routine correction
+  // updates do, so they don't spend the on-device high-priority Live Activity budget -- see
+  // index.js's onCorrection.
+  static priorityFor(pushType, priority = null) {
+    if (pushType === 'background') return '5';
+    return priority === 5 ? '5' : '10';
   }
 
   _sessionFor(origin) {
@@ -73,14 +94,14 @@ class ApnsClient {
     this.sessions.clear();
   }
 
-  async send({ token, environment, payload, pushType = 'liveactivity', topic = this.topic }) {
+  async send({ token, environment, payload, pushType = 'liveactivity', topic = this.topic, priority = null }) {
     const origin = environment === 'sandbox'
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com';
 
     const session = this._sessionFor(origin);
     try {
-      const result = await this._sendOnSession(session, { token, payload, pushType, topic });
+      const result = await this._sendOnSession(session, { token, payload, pushType, topic, priority });
       this.served.add(session);
       return result;
     } catch (error) {
@@ -96,16 +117,16 @@ class ApnsClient {
       // i.e. it went stale. A brand-new session that fails is a real network problem, and a
       // timeout or an APNs rejection is not a stale socket, so neither is retried.
       if (this.served.has(session) && STALE_SESSION_ERROR_CODES.has(error?.code)) {
-        return this._sendOnFreshSession(origin, { token, payload, pushType, topic });
+        return this._sendOnFreshSession(origin, { token, payload, pushType, topic, priority });
       }
       throw error;
     }
   }
 
-  async _sendOnFreshSession(origin, { token, payload, pushType, topic }) {
+  async _sendOnFreshSession(origin, { token, payload, pushType, topic, priority }) {
     const session = this._sessionFor(origin);
     try {
-      const result = await this._sendOnSession(session, { token, payload, pushType, topic });
+      const result = await this._sendOnSession(session, { token, payload, pushType, topic, priority });
       this.served.add(session);
       return result;
     } catch (error) {
@@ -114,7 +135,7 @@ class ApnsClient {
     }
   }
 
-  _sendOnSession(session, { token, payload, pushType, topic }) {
+  _sendOnSession(session, { token, payload, pushType, topic, priority }) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer = null;
@@ -148,7 +169,7 @@ class ApnsClient {
         ':path': `/3/device/${token}`,
         'apns-push-type': pushType,
         'apns-topic': topic,
-        'apns-priority': ApnsClient.priorityFor(pushType),
+        'apns-priority': ApnsClient.priorityFor(pushType, priority),
         authorization: `bearer ${this.authProvider.getToken()}`,
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
@@ -175,7 +196,7 @@ class ApnsClient {
           ok: status >= 200 && status < 300,
           status,
           apnsId,
-          shouldRemoveToken: REMOVABLE_STATUSES.has(status),
+          shouldRemoveToken: shouldRemoveToken(status, responseBody),
           body: responseBody,
         });
       });
