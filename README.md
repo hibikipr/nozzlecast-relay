@@ -33,6 +33,7 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 | `BAMBUDDY_API_KEY` | Bambuddy API key. **Recommend a dedicated, read-only key** (Bambuddy supports scoped keys independent of print-control/queue permissions) — the relay only ever reads printer status to enrich a Live Activity, it never needs to control anything |
 | `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` — how often Bambuddy is polled for `gcode_state` transitions |
 | `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate |
+| `LIVE_ACTIVITY_CHANNELS` | Optional, defaults to off. `true` puts each print's Live Activities on an APNs broadcast channel (iOS 18+), so updates reach a device even when its app never ran to register a per-activity token (Low Power Mode, force-quit). Requires Broadcast enabled under Push Notifications for the App ID in the Apple Developer portal; without it each print falls back to per-activity tokens |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
 

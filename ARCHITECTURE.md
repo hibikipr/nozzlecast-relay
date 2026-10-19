@@ -647,6 +647,57 @@ within ~30s on foreground regardless of this value.
   specific push can be matched against Apple's own delivery record. **If a Live Activity stops
   updating while these lines keep appearing, the relay has already done its job — look on-device.**
 
+## Broadcast channels (iOS 18+)
+
+**Why.** A per-activity token reaches the relay only if the app runs after push-to-start and
+calls `/register-activity`. iOS doesn't guarantee that run: Low Power Mode turns off background
+refresh, and a force-quit app gets no background pushes. Confirmed live 2026-10-18 on a Sam P1S
+print. Two devices accepted the push-to-start, but only one registered, despite all six wake
+retries. The other device's Live Activity showed "Waiting for heatbed temperature" at 0% for the
+whole print.
+
+**How** (`LIVE_ACTIVITY_CHANNELS=true`, `src/liveActivityChannels.js`):
+
+1. **Print start.** Create one channel per APNs environment that has a push-to-start token.
+   - Hosts: `api-manage-broadcast[.sandbox].push.apple.com`, ports 2196 (production) and 2195
+     (sandbox).
+   - Settings: `message-storage-policy` 0, which Apple pairs with the higher publishing budget
+     and recommends for frequent updates.
+   - The ids are stored on the print's `activity-tokens.json` entry (`channels`), so a restart
+     mid-print keeps publishing to the channels the devices already subscribed to.
+2. **Push-to-start.** It carries `aps["input-push-channel"]` for that token's environment. iOS
+   subscribes the new activity to the channel and never issues a per-activity token for it, so
+   the wake retry doesn't wait for one: `WakeRetryPolicy` expects only the token-mode devices.
+3. **Updates, corrections and end.** Each is published once per channel:
+   - Endpoint: `POST /4/broadcasts/apps/<bundle>` on `api-broadcast[.sandbox].push.apple.com`.
+   - Headers: `apns-channel-id`; `apns-expiration: 0`, which no-storage channels require.
+   - Priority: the same as token pushes (5 for corrections).
+   - Any registered per-activity tokens still get their own push alongside the broadcast. These
+     come from token-mode devices and app-started activities.
+   - After the end, the channels are marked ended (`channelsEnded`), so nothing else is sent on
+     them.
+4. **Deletion.**
+   - A print's channels are deleted when that printer's next print starts, after the new
+     push-to-start has gone out. So at most one set per printer exists, far under Apple's limit
+     of 10,000 per environment.
+   - At startup, any channel APNs lists that no entry references is deleted as an orphan.
+5. **Foreground starts.** `GET /channel/:printerID` returns the active channels, so an activity
+   the app starts itself can use `pushType: .channel(id)`. It returns 404 when there are none, and
+   the app then falls back to `.token`.
+
+**Why per print, not per printer.** Channels and activities have independent lifecycles. An
+ended activity still inside its dismissal window, if it were subscribed to a reused channel,
+would receive the next print's updates.
+
+**Fallback.** Channel creation failing for an environment covers several cases: Broadcast not
+enabled for the App ID, APNs unreachable, or the limit reached. In each case, that environment's
+devices get the plain token-mode push-to-start for this print, and everything works exactly as
+it did before channels.
+
+**No per-device feedback.** A broadcast's 200 means APNs accepted it for the channel. It says
+nothing about any one device, and there are no dead tokens to prune. Delivery per channel is
+visible in Apple's Push Notifications Console (production only).
+
 ## Configuration
 
 | Var | Purpose |
@@ -660,6 +711,7 @@ within ~30s on foreground regardless of this value.
 | `BAMBUDDY_API_KEY` | Bambuddy API key — recommend a dedicated, read-only key (Bambuddy supports scoped keys independent of print-control/queue permissions); the relay never needs to control anything |
 | `BAMBUDDY_POLL_INTERVAL_MS` | Default `15000` — how often Bambuddy is polled for `gcode_state` transitions |
 | `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Default `600000` (10 min); this deploy runs `60000` (1 min) since real print jobs run ~9 minutes and the 10-minute default never fired at all |
+| `LIVE_ACTIVITY_CHANNELS` | Default off; `true` enables broadcast channels — see "Broadcast channels" below. Must be forwarded in the compose `environment:` block (see the gotcha below) |
 | `DATA_DIR` | Default `/data` |
 | `PORT` | Default `3000` |
 

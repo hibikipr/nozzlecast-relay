@@ -49,6 +49,9 @@ class WakeRetryPolicy {
       this.byPrinter.set(printerID, state);
     }
 
+    // Zero expected means every device that got the push-to-start is on a broadcast channel (or
+    // none got it at all): no activity token is coming, so there is nothing to wake for.
+    if (state.expectedDevices === 0) return null;
     const missing = registeredDevices === 0
       || (state.expectedDevices !== null && registeredDevices < state.expectedDevices);
     if (!missing) return null;

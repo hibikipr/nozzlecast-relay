@@ -15,6 +15,7 @@ const { createServer } = require('./server');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 const { WakeRetryPolicy } = require('./wakeRetryPolicy');
+const { openPrintChannels, broadcastToChannels, deleteChannels, deleteOrphanChannels } = require('./liveActivityChannels');
 
 // Full push payloads are logged verbatim for debugging (e.g. checking attributes-type against
 // the app's actual Swift struct byte-for-byte -- APNs doesn't validate that field, so a mismatch
@@ -183,6 +184,7 @@ async function main() {
         teamId: config.apnsTeamId,
       }),
       topic: config.apnsTopic,
+      bundleId: config.apnsBundleId,
     }),
     production: new ApnsClient({
       authProvider: new ApnsAuthProvider({
@@ -191,6 +193,7 @@ async function main() {
         teamId: config.apnsTeamId,
       }),
       topic: config.apnsTopic,
+      bundleId: config.apnsBundleId,
     }),
   };
 
@@ -273,9 +276,12 @@ async function main() {
     }
   };
 
-  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null, bambuddyPrinterId = null }) => {
+  // `channels` are this print's broadcast channels (see liveActivityChannels.js): a token in an
+  // environment with a channel gets a push-to-start that subscribes its activity to that channel;
+  // a token without one gets the plain token-mode push as before.
+  const sendPushToStart = async ({ printerID, name, prefetchedStatus = null, issueSeverity = null, issueCount = null, bambuddyPrinterId = null, channels = [] }) => {
     const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus, bambuddyPrinterId });
-    const payload = buildPushToStartPayload({
+    const payloadFor = (inputPushChannel) => buildPushToStartPayload({
       printerID,
       printerName: name,
       jobName: enrichment?.jobName ?? null,
@@ -292,15 +298,21 @@ async function main() {
       // not passed explicitly here) -- filtered against that literal so a print starting
       // already mid-stage-0 doesn't show a redundant "Printing" caption under "Printing".
       stageDetail: filterStageDetail(enrichment?.stageDetail, 'Printing'),
+      inputPushChannel,
     });
-    console.log(`Push-to-start payload for printer "${name}": ${Buffer.byteLength(JSON.stringify(payload))} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
-    // How many devices APNs accepted the push-to-start for -- the number of activity tokens the
-    // wake retry waits for (see WakeRetryPolicy).
+    const channelFor = (environment) => channels.find((channel) => channel.environment === environment)?.channelId ?? null;
+    const loggedPayload = payloadFor(null);
+    console.log(`Push-to-start payload for printer "${name}": ${Buffer.byteLength(JSON.stringify(loggedPayload))} bytes ${JSON.stringify(redactImagesForLogging(loggedPayload))}`);
+    // How many devices APNs accepted the push-to-start for, and how many of those are token-mode
+    // -- the number of activity tokens the wake retry waits for (see WakeRetryPolicy). A
+    // channel-mode activity never registers a token, so it isn't waited for.
     let acceptedDevices = 0;
+    let tokenDevices = 0;
     for (const entry of tokenStore.list()) {
+      const channelId = channelFor(entry.environment);
       try {
         const client = apnsClients[entry.environment] || apnsClients.production;
-        const result = await client.send({ token: entry.token, environment: entry.environment, payload });
+        const result = await client.send({ token: entry.token, environment: entry.environment, payload: payloadFor(channelId) });
         if (result.shouldRemoveToken) {
           await tokenStore.remove(entry.token);
           console.log(`Removed dead token (status ${result.status}): ${entry.token}`);
@@ -308,7 +320,9 @@ async function main() {
           console.error(`Push-to-start send failed (status ${result.status}) for token ${entry.token}: ${result.body}`);
         } else {
           acceptedDevices += 1;
-          console.log(`Push-to-start accepted by APNs for printer "${name}" (token ${entry.token}, apns-id ${result.apnsId ?? 'n/a'})`);
+          if (!channelId) tokenDevices += 1;
+          const mode = channelId ? `channel ${channelId}` : 'token mode';
+          console.log(`Push-to-start accepted by APNs for printer "${name}" (token ${entry.token}, ${mode}, apns-id ${result.apnsId ?? 'n/a'})`);
         }
       } catch (error) {
         console.error(`Push-to-start send threw for token ${entry.token}:`, error);
@@ -319,7 +333,7 @@ async function main() {
     // needing a foreground launch — see buildBackgroundWakePayload for why this is no longer
     // believed to be load-bearing for activity visibility.
     await sendBackgroundWake(name);
-    return acceptedDevices;
+    return { acceptedDevices, tokenDevices };
   };
 
   // Updates or ends an existing Live Activity directly via its own per-activity push token,
@@ -337,7 +351,8 @@ async function main() {
   }) => {
     const activity = activityTokenStore.get(printerID);
     const deviceTokens = activityTokenStore.tokensFor(printerID);
-    if (!activity || deviceTokens.length === 0) {
+    const channels = activityTokenStore.activeChannelsFor(printerID);
+    if (!activity || (deviceTokens.length === 0 && channels.length === 0)) {
       // Nothing to end: waking the app for a print that is already over can't produce a token
       // anyone will ever push to.
       if (event === 'end') {
@@ -411,7 +426,10 @@ async function main() {
     // apns-id is logged alongside so a specific push can be looked up in Apple's delivery record.
     const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
     console.log(`Activity ${event} payload for printer "${name}": ${payloadBytes} bytes ${JSON.stringify(redactImagesForLogging(payload))}`);
-    // One push per device showing this print's Live Activity, not one per printer. Each device
+    // Channel-mode activities: one publish per environment reaches every one of them.
+    await broadcastToChannels({ apnsClients, channels, payload, priority, name, event, progress });
+    // Token-mode activities (a device whose environment had no channel, or an activity the app
+    // started itself without one): one push per device showing this print's Live Activity, not one per printer. Each device
     // has its own ActivityKit token and its own on-device liveactivitiesd budget, so a failure
     // against one says nothing about the others -- a dead token drops only that device.
     for (const device of deviceTokens) {
@@ -433,13 +451,17 @@ async function main() {
 
     if (event === 'end') {
       await activityTokenStore.clearTokens(printerID);
+      await activityTokenStore.endChannels(printerID);
       return;
     }
 
     // Some devices registered but not all of them: the ones above got their update, and the
     // missing ones get another wake once it's due. Counted after the sends so a token dropped as
-    // dead just now counts as missing.
-    const retry = wakeRetries.check(printerID, activityTokenStore.tokensFor(printerID).length);
+    // dead just now counts as missing. A print on channels with no token registered at all is
+    // skipped: its token-mode device count is unknown only after a relay restart, and its
+    // activities are reachable through the channel regardless.
+    const registeredTokens = activityTokenStore.tokensFor(printerID).length;
+    const retry = channels.length > 0 && registeredTokens === 0 ? null : wakeRetries.check(printerID, registeredTokens);
     if (retry) {
       wakeRetries.recordWake(printerID);
       console.log(`Retrying background wake for printer "${name}" (${retry.reason}, attempt ${retry.attempt}/${retry.maxRetries})`);
@@ -466,10 +488,20 @@ async function main() {
           // inherit the last print's used-up retry cap and never get a wake retry at all. The
           // real expected-device count replaces the unknown one once push-to-start has gone out.
           wakeRetries.startPrint(printerID, null);
+          // The previous print's channels: its activity is over, so they're deleted once this
+          // print's push-to-start is out (not before -- a slow delete mustn't delay the start).
+          const previousChannels = activityTokenStore.get(printerID)?.channels ?? [];
           await activityTokenStore.startPrint({ printerID, printerName: name, startedAt: new Date().toISOString() });
-          const acceptedDevices = await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId });
-          wakeRetries.startPrint(printerID, acceptedDevices);
-          console.log(`Push-to-start accepted for ${acceptedDevices} device(s) for printer "${name}" -- waiting for that many activity tokens`);
+          let channels = [];
+          if (config.liveActivityChannels) {
+            const environments = [...new Set(tokenStore.list().map((entry) => entry.environment))];
+            channels = await openPrintChannels({ apnsClients, environments, name });
+            if (channels.length > 0) await activityTokenStore.setChannels(printerID, channels);
+          }
+          const { acceptedDevices, tokenDevices } = await sendPushToStart({ printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId, channels });
+          wakeRetries.startPrint(printerID, tokenDevices);
+          console.log(`Push-to-start accepted for ${acceptedDevices} device(s) for printer "${name}" (${acceptedDevices - tokenDevices} on a broadcast channel) -- waiting for ${tokenDevices} activity token(s)`);
+          await deleteChannels({ apnsClients, channels: previousChannels });
         },
         onPause: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
           sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId }),
@@ -535,7 +567,7 @@ async function main() {
         // registered for its activity, the print ended while the relay was down and no end push
         // ever went out. Send it now rather than leaving the Live Activity up until iOS expires it.
         onBaselineInactive: async ({ printerID, name, status, bambuddyPrinterId }) => {
-          if (activityTokenStore.tokensFor(printerID).length === 0) return;
+          if (activityTokenStore.tokensFor(printerID).length === 0 && activityTokenStore.activeChannelsFor(printerID).length === 0) return;
           console.log(`Printer "${name}" is ${status.state} at startup with an activity still registered -- sending the end push it missed`);
           await sendActivityUpdate({
             event: 'end',
@@ -547,6 +579,15 @@ async function main() {
           });
         },
   });
+  // Channels APNs still holds that no tracked print references (a failed delete, a lost data
+  // file). Finished before the poller starts: a print starting mid-cleanup would create a channel
+  // that APNs lists but the store doesn't reference yet, and cleanup would delete it out from
+  // under the new activity. Every APNs request is bounded by the client's timeout, so this can't
+  // hang startup; deleteOrphanChannels never throws.
+  if (config.liveActivityChannels) {
+    await deleteOrphanChannels({ apnsClients, keep: activityTokenStore.allChannels() });
+  }
+
   poller.start();
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 

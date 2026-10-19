@@ -33,9 +33,12 @@ const STALE_SESSION_ERROR_CODES = new Set([
 ]);
 
 class ApnsClient {
-  constructor({ authProvider, topic, connect = http2.connect, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS }) {
+  constructor({ authProvider, topic, bundleId = null, connect = http2.connect, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS }) {
     this.authProvider = authProvider;
     this.topic = topic;
+    // Broadcast and channel-management paths are keyed by the bare bundle id, not the
+    // `.push-type.liveactivity` topic.
+    this.bundleId = bundleId;
     this.connect = connect;
     this.requestTimeoutMs = requestTimeoutMs;
     // One long-lived HTTP/2 session per APNs host. Apple asks providers to keep connections open
@@ -99,9 +102,110 @@ class ApnsClient {
       ? 'https://api.sandbox.push.apple.com'
       : 'https://api.push.apple.com';
 
+    const response = await this._request(origin, {
+      ':method': 'POST',
+      ':path': `/3/device/${token}`,
+      'apns-push-type': pushType,
+      'apns-topic': topic,
+      'apns-priority': ApnsClient.priorityFor(pushType, priority),
+    }, JSON.stringify(payload));
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      // Apple's own correlation id for this push. Worth surfacing because a 2xx from APNs is
+      // acceptance, not application: a Live Activity token whose activity has already ended
+      // keeps returning 200 through its dismissal window while the device silently discards
+      // every push. When a Live Activity visibly stops updating, this is the only handle that
+      // ties a relay log line to Apple's own delivery record for that specific push.
+      apnsId: response.headers['apns-id'] || null,
+      shouldRemoveToken: shouldRemoveToken(response.status, response.body),
+      body: response.body,
+    };
+  }
+
+  // Broadcast push: one Live Activity update/end published to a channel, which APNs fans out to
+  // every activity subscribed to it (iOS 18+). A channel-backed activity has no per-activity
+  // token, so this is the only way to reach it -- and it needs no app code to run on the device
+  // first, which is the point: a phone in Low Power Mode, or with the app force-quit, never ran
+  // the background wake that registers a token, so token-only updates never reached it.
+  //
+  // apns-expiration is 0 because channels are created with the No Message Stored policy (see
+  // createChannel), and Apple rejects a nonzero expiration on those.
+  async broadcast({ channelId, environment, payload, priority = null }) {
+    const origin = environment === 'sandbox'
+      ? 'https://api-broadcast.sandbox.push.apple.com'
+      : 'https://api-broadcast.push.apple.com';
+
+    const response = await this._request(origin, {
+      ':method': 'POST',
+      ':path': `/4/broadcasts/apps/${this.bundleId}`,
+      'apns-channel-id': channelId,
+      'apns-push-type': 'liveactivity',
+      'apns-priority': ApnsClient.priorityFor('liveactivity', priority),
+      'apns-expiration': '0',
+    }, JSON.stringify(payload));
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      // Broadcasts answer with apns-unique-id rather than apns-id; it's the handle Apple asks for
+      // when troubleshooting a specific broadcast.
+      apnsId: response.headers['apns-unique-id'] || response.headers['apns-id'] || null,
+      body: response.body,
+    };
+  }
+
+  // Channel management lives on its own host and port, separate from both the device and the
+  // broadcast endpoints. Returns the new channel id, or throws with APNs' status/body.
+  //
+  // message-storage-policy 0 (No Message Stored): Apple gives that policy the higher publishing
+  // budget and recommends it for frequently updated activities. A print pushes every correction
+  // interval, so a device that misses one update while offline gets the next one shortly anyway.
+  async createChannel({ environment }) {
+    const response = await this._request(ApnsClient.channelOrigin(environment), {
+      ':method': 'POST',
+      ':path': `/1/apps/${this.bundleId}/channels`,
+    }, JSON.stringify({ 'message-storage-policy': 0, 'push-type': 'LiveActivity' }));
+    const channelId = response.headers['apns-channel-id'];
+    if (response.status !== 201 || !channelId) {
+      throw new Error(`APNs channel create failed (status ${response.status}): ${response.body}`);
+    }
+    return channelId;
+  }
+
+  async deleteChannel({ environment, channelId }) {
+    const response = await this._request(ApnsClient.channelOrigin(environment), {
+      ':method': 'DELETE',
+      ':path': `/1/apps/${this.bundleId}/channels`,
+      'apns-channel-id': channelId,
+    });
+    if (response.status !== 204) {
+      throw new Error(`APNs channel delete failed (status ${response.status}): ${response.body}`);
+    }
+  }
+
+  async listChannels({ environment }) {
+    const response = await this._request(ApnsClient.channelOrigin(environment), {
+      ':method': 'GET',
+      ':path': `/1/apps/${this.bundleId}/all-channels`,
+    });
+    if (response.status !== 200) {
+      throw new Error(`APNs channel list failed (status ${response.status}): ${response.body}`);
+    }
+    return JSON.parse(response.body || '{}').channels ?? [];
+  }
+
+  static channelOrigin(environment) {
+    return environment === 'sandbox'
+      ? 'https://api-manage-broadcast.sandbox.push.apple.com:2195'
+      : 'https://api-manage-broadcast.push.apple.com:2196';
+  }
+
+  // One request on the cached session for `origin`, returning { status, headers, body } for any
+  // HTTP response; only a transport failure or timeout throws.
+  async _request(origin, headers, body = null) {
     const session = this._sessionFor(origin);
     try {
-      const result = await this._sendOnSession(session, { token, payload, pushType, topic, priority });
+      const result = await this._sendOnSession(session, headers, body);
       this.served.add(session);
       return result;
     } catch (error) {
@@ -117,16 +221,16 @@ class ApnsClient {
       // i.e. it went stale. A brand-new session that fails is a real network problem, and a
       // timeout or an APNs rejection is not a stale socket, so neither is retried.
       if (this.served.has(session) && STALE_SESSION_ERROR_CODES.has(error?.code)) {
-        return this._sendOnFreshSession(origin, { token, payload, pushType, topic, priority });
+        return this._sendOnFreshSession(origin, headers, body);
       }
       throw error;
     }
   }
 
-  async _sendOnFreshSession(origin, { token, payload, pushType, topic, priority }) {
+  async _sendOnFreshSession(origin, headers, body) {
     const session = this._sessionFor(origin);
     try {
-      const result = await this._sendOnSession(session, { token, payload, pushType, topic, priority });
+      const result = await this._sendOnSession(session, headers, body);
       this.served.add(session);
       return result;
     } catch (error) {
@@ -135,7 +239,7 @@ class ApnsClient {
     }
   }
 
-  _sendOnSession(session, { token, payload, pushType, topic, priority }) {
+  _sendOnSession(session, requestHeaders, body) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer = null;
@@ -163,46 +267,34 @@ class ApnsClient {
         settleReject(new Error(`APNs request timed out after ${this.requestTimeoutMs}ms`));
       }, this.requestTimeoutMs);
 
-      const body = JSON.stringify(payload);
-      stream = session.request({
-        ':method': 'POST',
-        ':path': `/3/device/${token}`,
-        'apns-push-type': pushType,
-        'apns-topic': topic,
-        'apns-priority': ApnsClient.priorityFor(pushType, priority),
+      const headers = {
+        ...requestHeaders,
         authorization: `bearer ${this.authProvider.getToken()}`,
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(body),
-      });
+      };
+      if (body !== null) {
+        headers['content-type'] = 'application/json';
+        headers['content-length'] = Buffer.byteLength(body);
+      }
+      stream = session.request(headers);
 
       let status = null;
-      let apnsId = null;
+      let responseHeaders = {};
       let responseBody = '';
 
-      stream.on('response', (headers) => {
-        status = headers[':status'];
-        // Apple's own correlation id for this push. Worth surfacing because a 2xx from APNs is
-        // acceptance, not application: a Live Activity token whose activity has already ended
-        // keeps returning 200 through its dismissal window while the device silently discards
-        // every push. When a Live Activity visibly stops updating, this is the only handle that
-        // ties a relay log line to Apple's own delivery record for that specific push.
-        apnsId = headers['apns-id'] || null;
+      stream.on('response', (received) => {
+        status = received[':status'];
+        responseHeaders = received;
       });
       stream.on('data', (chunk) => {
         responseBody += chunk.toString();
       });
       stream.on('end', () => {
-        settleResolve({
-          ok: status >= 200 && status < 300,
-          status,
-          apnsId,
-          shouldRemoveToken: shouldRemoveToken(status, responseBody),
-          body: responseBody,
-        });
+        settleResolve({ status, headers: responseHeaders, body: responseBody });
       });
       stream.on('error', settleReject);
 
-      stream.end(body);
+      if (body !== null) stream.end(body);
+      else stream.end();
     });
   }
 }

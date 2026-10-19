@@ -80,11 +80,16 @@ function buildPushToStartPayload({
   issueSeverity = null,
   issueCount = null,
   stageDetail = null,
+  inputPushChannel = null,
 }) {
   return {
     aps: {
       timestamp: Math.floor(now.getTime() / 1000),
       event: 'start',
+      // iOS 18+: the started activity subscribes to this broadcast channel instead of minting a
+      // per-activity push token, so its updates need nothing from the app on the device. Omitted
+      // (not null) without a channel, since iOS treats the key's presence as a channel request.
+      ...(inputPushChannel ? { 'input-push-channel': inputPushChannel } : {}),
       'content-state': buildContentState({
         startedAt: now, jobName, estimatedEndAt, currentLayer, totalLayers, nozzleTempC, rightNozzleTempC, bedTempC, coverImage, liveSnapshot, issueSeverity, issueCount, stageDetail,
       }),
