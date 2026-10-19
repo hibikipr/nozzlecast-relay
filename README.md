@@ -90,9 +90,9 @@ Each GitHub release publishes a multi-arch image to `ghcr.io/hibikipr/nozzlecast
 | `1.0.0-beta5` (exact version) | never — pin to this for a reproducible deploy |
 | `sha-<short sha>` | never — the exact commit that produced the build |
 
-Every release so far has been a prerelease, so **`latest` does not move yet** — track `beta` (or
-pin an exact version) until a stable release is cut. `latest` used to be applied to every beta and
-every manual build, which made it meaningless as a stability signal.
+Track `latest` for stable releases, or `beta` to test prereleases before they're cut as stable.
+`latest` used to be applied to every beta and every manual build, which made it meaningless as a
+stability signal.
 
 ## API
 
