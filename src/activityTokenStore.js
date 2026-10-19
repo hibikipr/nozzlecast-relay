@@ -77,7 +77,41 @@ class ActivityTokenStore {
       tokens: [],
       coverImage: null,
       coverImageFailures: 0,
+      channels: [],
+      channelsEnded: false,
     });
+    await this.save();
+  }
+
+  // Broadcast channels created for this print, one per APNs environment ({ environment,
+  // channelId }). Persisted so a relay restart mid-print keeps publishing to the same channels
+  // the devices subscribed to at push-to-start -- a new channel would reach nobody.
+  async setChannels(printerID, channels) {
+    const existing = this.entries.get(printerID);
+    if (!existing) return;
+    this.entries.set(printerID, { ...existing, channels, channelsEnded: false });
+    await this.save();
+  }
+
+  // Channels still carrying this print: empty once its end has been published, so nothing (in
+  // particular a second end after a restart -- see index.js's onBaselineInactive) goes out on
+  // them again.
+  activeChannelsFor(printerID) {
+    const entry = this.entries.get(printerID);
+    if (!entry || entry.channelsEnded) return [];
+    return entry.channels ?? [];
+  }
+
+  // Every channel this store still references, ended or not. A channel is deleted at APNs only
+  // when its printer's next print starts, so these are the ones startup cleanup must leave alone.
+  allChannels() {
+    return this.list().flatMap((entry) => entry.channels ?? []);
+  }
+
+  async endChannels(printerID) {
+    const existing = this.entries.get(printerID);
+    if (!existing || existing.channelsEnded || (existing.channels ?? []).length === 0) return;
+    this.entries.set(printerID, { ...existing, channelsEnded: true });
     await this.save();
   }
 
@@ -97,6 +131,8 @@ class ActivityTokenStore {
       startedAt: existing ? existing.startedAt : null,
       coverImage: existing ? existing.coverImage : null,
       coverImageFailures: existing?.coverImageFailures ?? 0,
+      channels: existing?.channels ?? [],
+      channelsEnded: existing?.channelsEnded ?? false,
       tokens: [...others, { token, environment, registeredAt: new Date().toISOString() }],
     });
     await this.save();

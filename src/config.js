@@ -46,6 +46,11 @@ function loadConfig(env = process.env) {
     // no other event to report. The design deliberately relies on ActivityKit's own native
     // countdown-timer UI between corrections rather than pushing on every percentage milestone.
     liveActivityCorrectionIntervalMs: Number(env.LIVE_ACTIVITY_CORRECTION_INTERVAL_MS) || 10 * 60 * 1000,
+    // Off by default: push-to-start subscribes each new activity to a per-print broadcast channel
+    // (iOS 18+) and updates are published there. It needs Broadcast enabled for the App ID in the
+    // Apple Developer portal; without it channel creation fails and each print falls back to
+    // per-activity tokens.
+    liveActivityChannels: env.LIVE_ACTIVITY_CHANNELS === 'true',
     dataDir: env.DATA_DIR || '/data',
   };
 }

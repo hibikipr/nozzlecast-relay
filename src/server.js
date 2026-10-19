@@ -108,6 +108,18 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     res.status(200).json({ ok: true });
   }));
 
+  // The broadcast channels carrying this printer's current print, for an activity the app starts
+  // itself in the foreground (Activity.request with pushType .channel) rather than via
+  // push-to-start. 404 when the print has none -- channels disabled, creation failed, or the print
+  // has ended -- and the app then falls back to a per-activity token.
+  app.get('/channel/:printerID', requireAuth(authSecret), (req, res) => {
+    const channels = activityTokenStore.activeChannelsFor(normalizedID(req.params.printerID));
+    if (channels.length === 0) {
+      return res.status(404).json({ error: 'no active channel for this printer' });
+    }
+    res.status(200).json({ channels });
+  });
+
   return app;
 }
 
