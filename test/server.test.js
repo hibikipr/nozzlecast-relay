@@ -245,3 +245,86 @@ test('a store write that fails answers 500 instead of escaping as an unhandled r
     .send({ token: 'abc', printerID: 'vich2c', environment: 'production' });
   assert.equal(res.status, 500);
 });
+
+// GET /cover/:printerID -- the cover image API. A fake cover service stands in for Bambuddy and
+// the printer; the route's own job is auth, lookup, rendering and caching headers.
+const sharp = require('sharp');
+const { CoverUnavailableError } = require('../src/printerCover');
+
+async function coverApp({ cover, coverApiKey = null } = {}) {
+  const png = await sharp({ create: { width: 400, height: 400, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();
+  const calls = [];
+  const coverService = {
+    findPrinter: async (id) => (id === 'vic-h2c' ? { id: 2, name: 'Vic H2C' } : null),
+    cover: async (printer, options) => {
+      calls.push(options);
+      return cover ? cover(printer, options) : { png, etag: '"abc123"', source: 'printer', jobName: 'OREO / LOVE' };
+    },
+  };
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', coverService, coverApiKey });
+  return { app, calls };
+}
+
+test('GET /cover without a key is rejected', async () => {
+  const { app } = await coverApp();
+  assert.equal((await request(app).get('/cover/vic-h2c')).status, 401);
+  assert.equal((await request(app).get('/cover/vic-h2c?key=wrong')).status, 401);
+});
+
+test('GET /cover takes the relay secret as a Bearer header or a key parameter', async () => {
+  const { app } = await coverApp();
+  const viaHeader = await request(app).get('/cover/vic-h2c').set('Authorization', 'Bearer secret123');
+  assert.equal(viaHeader.status, 200);
+  assert.equal(viaHeader.headers['content-type'], 'image/png');
+  assert.equal(viaHeader.headers['x-image-width'], '400');
+  assert.equal(viaHeader.headers['x-cover-source'], 'printer');
+  assert.equal(decodeURIComponent(viaHeader.headers['x-print-job']), 'OREO / LOVE');
+  assert.equal((await request(app).get('/cover/vic-h2c?key=secret123')).status, 200);
+});
+
+test('GET /cover takes the separate cover key, which registration does not', async () => {
+  const { app } = await coverApp({ coverApiKey: 'display-key' });
+  assert.equal((await request(app).get('/cover/vic-h2c?key=display-key')).status, 200);
+  const register = await request(app).post('/register').set('Authorization', 'Bearer display-key').send({ token: 'a', environment: 'sandbox' });
+  assert.equal(register.status, 401);
+});
+
+test('GET /cover renders the asked-for size and format', async () => {
+  const { app } = await coverApp();
+  const res = await request(app).get('/cover/vic-h2c?key=secret123&width=120&format=jpeg').buffer(true);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'image/jpeg');
+  assert.equal(res.headers['x-image-width'], '120');
+  assert.equal((await sharp(res.body).metadata()).width, 120);
+});
+
+test('GET /cover answers 304 to a matching If-None-Match, and a different rendering has its own ETag', async () => {
+  const { app } = await coverApp();
+  const first = await request(app).get('/cover/vic-h2c?key=secret123&width=100');
+  const etag = first.headers.etag;
+  assert.ok(etag);
+  const again = await request(app).get('/cover/vic-h2c?key=secret123&width=100').set('If-None-Match', etag);
+  assert.equal(again.status, 304);
+  const otherSize = await request(app).get('/cover/vic-h2c?key=secret123&width=50');
+  assert.notEqual(otherSize.headers.etag, etag);
+});
+
+test('GET /cover passes the top view through', async () => {
+  const { app, calls } = await coverApp();
+  await request(app).get('/cover/vic-h2c?key=secret123&view=top');
+  assert.deepEqual(calls, [{ view: 'top' }]);
+});
+
+test('GET /cover is 404 for an unknown printer or a job without a cover, 400 for bad options', async () => {
+  const { app } = await coverApp({ cover: async () => { throw new CoverUnavailableError('printer "Vic H2C" has no current or last job'); } });
+  assert.equal((await request(app).get('/cover/nope?key=secret123')).status, 404);
+  const noCover = await request(app).get('/cover/vic-h2c?key=secret123');
+  assert.equal(noCover.status, 404);
+  assert.match(noCover.body.error, /no current or last job/);
+  assert.equal((await request(app).get('/cover/vic-h2c?key=secret123&format=gif')).status, 400);
+});
+
+test('GET /cover is 503 on a relay built without a cover service', async () => {
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
+  assert.equal((await request(app).get('/cover/vic-h2c?key=secret123')).status, 503);
+});

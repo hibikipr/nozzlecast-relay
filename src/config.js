@@ -1,3 +1,5 @@
+const { parseAccessCodes } = require('./printerCover');
+
 const REQUIRED_VARS = [
   'RELAY_AUTH_SECRET',
   'APNS_KEY_PATH',
@@ -51,6 +53,14 @@ function loadConfig(env = process.env) {
     // Apple Developer portal; without it channel creation fails and each print falls back to
     // per-activity tokens.
     liveActivityChannels: env.LIVE_ACTIVITY_CHANNELS === 'true',
+    // Optional: "<serial or printer name>:<LAN access code>" pairs, comma-separated. With a
+    // printer's code the relay reads a cover Bambuddy can't find (a cloud print, a job name with
+    // a "/") straight off the printer over FTPS. Bambuddy never hands access codes to an API key,
+    // so they can't come from there.
+    printerAccessCodes: parseAccessCodes(env.PRINTER_ACCESS_CODES),
+    // Optional second key for GET /cover only, so a dashboard or display can show covers without
+    // holding RELAY_AUTH_SECRET, which also registers push tokens.
+    coverApiKey: env.COVER_API_KEY || null,
     dataDir: env.DATA_DIR || '/data',
   };
 }

@@ -34,6 +34,8 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 | `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` — how often Bambuddy is polled for `gcode_state` transitions |
 | `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate |
 | `LIVE_ACTIVITY_CHANNELS` | Optional, defaults to off. `true` puts each print's Live Activities on an APNs broadcast channel (iOS 18+), so updates reach a device even when its app never ran to register a per-activity token (Low Power Mode, force-quit). Requires Broadcast enabled under Push Notifications for the App ID in the Apple Developer portal; without it each print falls back to per-activity tokens |
+| `PRINTER_ACCESS_CODES` | Optional. Comma-separated `<serial or printer name>:<LAN access code>` pairs, e.g. `31B8AP610800367:12345678,Sam P1S:87654321`. With a printer's code, a cover Bambuddy can't find (a cloud print, a job name with a `/`) is read straight off the printer over FTPS. See [Cover image API](#cover-image-api) |
+| `COVER_API_KEY` | Optional. A second key that `GET /cover` accepts besides `RELAY_AUTH_SECRET`, for a dashboard or display that shouldn't hold the secret that also registers push tokens |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
 
@@ -129,6 +131,48 @@ stability signal.
   the app received in the push-to-start payload's `attributes.printerID` (the relay re-normalizes
   it the same way regardless, so an exact match isn't required).
 - `GET /healthz` — unauthenticated.
+- `GET /cover/:printerID` — the current or last job's cover image. See below.
+
+### Cover image API
+
+`GET /cover/:printerID` returns the sliced plate's render (the image Bambuddy shows on a printer
+card) for a printer's current or last job, for any client: NozzleCast, a web dashboard, a
+microcontroller display. The Live Activity's `coverImage` comes from the same source.
+
+- **Printer:** `printerID` is the printer's Bambuddy name in any spelling (`Vic H2C`, `vic-h2c`,
+  `vich2c`) or its serial number.
+- **Auth:** `RELAY_AUTH_SECRET` or `COVER_API_KEY`, as `Authorization: Bearer <key>` or, for a
+  client that can't set headers, `?key=<key>`. A key in the URL can end up in proxy logs; prefer
+  the header, and `COVER_API_KEY` for devices.
+- **Where the image comes from:** Bambuddy's own `/cover` first. When Bambuddy has none and the
+  printer has an entry in `PRINTER_ACCESS_CODES`, the relay reads the job's 3MF straight off the
+  printer over FTPS (port 990) and takes the plate's render from it. That covers prints Bambuddy
+  doesn't look for: cloud prints (Bambu Handy, MakerWorld), whose download link Bambuddy reads as
+  internal storage, and job names with a `/`, which the printer stores as `2f`
+  (maziggy/bambuddy#3382, closed as out of scope). The container must reach the printer on TCP 990.
+  A1-series printers, whose FTPS takes only a clear data channel, aren't supported on that path.
+- **Query options:**
+
+  | Option | Values |
+  |---|---|
+  | `width`, `height` | fit inside this box (1–2048), keeping the aspect ratio; never enlarged |
+  | `format` | `png` (default), `jpeg` (baseline, for TJpgDec/JPEGDEC), `rgb565` (raw 16-bit little-endian pixels, no header) |
+  | `quality` | JPEG quality 1–100, default 80 |
+  | `bg` | `RRGGBB` the transparent background is flattened onto for `jpeg`/`rgb565`, default `000000` |
+  | `view` | `top` for the top-down plate view instead of the angled one |
+
+- **Response headers:** `X-Image-Width` / `X-Image-Height` (the size actually sent, needed for
+  `rgb565`), `X-Print-Job` (the job name, URL-encoded), `X-Cover-Source` (`bambuddy` or `printer`)
+  and an `ETag`. Send it back as `If-None-Match` to poll cheaply: the answer is `304` until the job
+  or the asked-for rendering changes.
+- **Errors:** `404` with `{ "error": "<why>" }` when the printer is unknown, has no job, or no
+  cover could be found; a failed lookup is retried after 30 s, backing off to 10 min for that job.
+  `400` for a bad option.
+
+```bash
+curl -H "Authorization: Bearer $COVER_API_KEY" -o cover.jpg \
+  "https://relay.example.com/cover/vic-h2c?width=240&height=240&format=jpeg"
+```
 
 ## Contributing
 

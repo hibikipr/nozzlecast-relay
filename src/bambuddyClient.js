@@ -82,9 +82,11 @@ class BambuddyClient {
 
   // GET /api/v1/printers/{id}/cover -> the sliced-plate preview render (PNG), static for the
   // whole job. Bearer-authenticated like every other non-image endpoint in this client -- see the
-  // comment on mintCameraStreamToken() above for why this doesn't take a stream token.
-  async cover(printerId) {
-    return this._getBinary(`/api/v1/printers/${printerId}/cover`, { authenticated: true });
+  // comment on mintCameraStreamToken() above for why this doesn't take a stream token. `view`
+  // "top" asks for the top-down plate view instead of the angled one.
+  async cover(printerId, { view = null } = {}) {
+    const query = view ? `?view=${encodeURIComponent(view)}` : '';
+    return this._getBinary(`/api/v1/printers/${printerId}/cover${query}`, { authenticated: true });
   }
 
   // GET /api/v1/printers/{id}/camera/snapshot?token=... -> a live camera frame (JPEG).
