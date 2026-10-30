@@ -5,13 +5,18 @@ const { CoverUnavailableError } = require('./printerCover');
 const { renderCover, parseRenderOptions, InvalidRenderOptions } = require('./coverRender');
 
 // Constant-time comparison, so response timing can't be used to guess the secret byte by byte.
-// Both sides go through an HMAC first because timingSafeEqual requires equal-length inputs. The
-// HMAC key is random per process: nothing is stored, so this is not password hashing, and a plain
-// SHA-256 here was flagged as such by CodeQL (js/insufficient-password-hash).
-const COMPARISON_KEY = crypto.randomBytes(32);
+// timingSafeEqual needs equal-length inputs, so both sides are zero-padded to the longer one and
+// the lengths are compared separately. They used to be SHA-256'd to equalize them instead, which
+// CodeQL reads as password hashing (js/insufficient-password-hash) though nothing is stored.
 function secretsMatch(provided, expected) {
-  const digest = (value) => crypto.createHmac('sha256', COMPARISON_KEY).update(value).digest();
-  return crypto.timingSafeEqual(digest(provided), digest(expected));
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  const length = Math.max(a.length, b.length, 1);
+  const paddedA = Buffer.alloc(length);
+  const paddedB = Buffer.alloc(length);
+  a.copy(paddedA);
+  b.copy(paddedB);
+  return crypto.timingSafeEqual(paddedA, paddedB) && a.length === b.length;
 }
 
 function requireAuth(authSecret) {
