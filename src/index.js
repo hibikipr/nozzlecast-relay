@@ -12,6 +12,7 @@ const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = 
 const { downscaleImage } = require('./imageDownscale');
 const { resolveCoverImage } = require('./coverImageCache');
 const { createServer } = require('./server');
+const { PrinterCoverService } = require('./printerCover');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 const { WakeRetryPolicy } = require('./wakeRetryPolicy');
@@ -60,6 +61,7 @@ async function main() {
 
   const bambuddyClient = new BambuddyClient({ baseUrl: config.bambuddyUrl, apiKey: config.bambuddyApiKey });
   const printerIdCache = new PrinterIdCache({ bambuddyClient });
+  const coverService = new PrinterCoverService({ bambuddyClient, accessCodes: config.printerAccessCodes });
 
   // Exact caps from PrintLiveActivityManager.downscaledCoverImage / NotificationService.
   // downscaledThumbnail -- see imageDownscale.js for why matching these precisely (not
@@ -145,9 +147,17 @@ async function main() {
       activityTokenStore,
       printerID,
       name,
+      // Through the cover service rather than Bambuddy's /cover directly, so a Live Activity gets
+      // a cover for a print Bambuddy can't find one for (read off the printer instead), and the
+      // render the /cover API serves is the same one, fetched once.
       fetchCover: () => fetchDownscaledCameraImage(
         bambuddyPrinterId,
-        (id) => bambuddyClient.cover(id),
+        async (id) => {
+          const printers = await bambuddyClient.printers();
+          const printer = printers.find((candidate) => candidate.id === id);
+          if (!printer) throw new Error(`Bambuddy no longer lists printer ${id}`);
+          return (await coverService.cover(printer, { status: prefetchedStatus })).png;
+        },
         { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
       ),
     });
@@ -591,7 +601,12 @@ async function main() {
   poller.start();
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 
-  const app = createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret });
+  const app = createServer({
+    tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret, coverService, coverApiKey: config.coverApiKey,
+  });
+  if (config.printerAccessCodes.size > 0) {
+    console.log(`Covers Bambuddy can't find are read from the printer for ${config.printerAccessCodes.size} configured access code(s)`);
+  }
   const port = process.env.PORT || 3000;
   const server = http.createServer(app);
   server.listen(port, () => {

@@ -18,12 +18,15 @@
     "replay": "node scripts/replay-run.js"
   },
   "dependencies": {
+    "basic-ftp": "^6.2.3",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "supertest": "^7.0.0"
+    "supertest": "^7.0.0",
+    "yazl": "^3.3.1"
   },
   "overrides": {
     "qs": "^6.16.0"

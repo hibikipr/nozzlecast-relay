@@ -60,3 +60,16 @@ test('loadConfig throws listing every missing required var', () => {
     /Missing required env vars: RELAY_AUTH_SECRET, BAMBUDDY_URL/
   );
 });
+
+test('cover settings are optional: no access codes and no separate cover key by default', () => {
+  const config = loadConfig(FULL_ENV);
+  assert.equal(config.printerAccessCodes.size, 0);
+  assert.equal(config.coverApiKey, null);
+});
+
+test('loadConfig reads PRINTER_ACCESS_CODES and COVER_API_KEY', () => {
+  const config = loadConfig({ ...FULL_ENV, PRINTER_ACCESS_CODES: '01P00A:1234abcd,Vic H2C:5678efgh', COVER_API_KEY: 'display' });
+  assert.equal(config.printerAccessCodes.get('01p00a'), '1234abcd');
+  assert.equal(config.printerAccessCodes.get('vich2c'), '5678efgh');
+  assert.equal(config.coverApiKey, 'display');
+});

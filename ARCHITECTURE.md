@@ -60,6 +60,10 @@ Single Node.js service (`nozzlecast-relay`), one process:
 | `printerIdCache.js` | `printerID` (relay's normalized identity) → Bambuddy's own numeric printer id. |
 | `bambuddyEnrichment.js` | Pure mapping from a Bambuddy status DTO onto content-state enrichment fields. |
 | `imageDownscale.js` | `sharp`-based resize+JPEG-quality-loop, matching the app's own image budget exactly. |
+| `printerCover.js` | Cover image of a printer's job: Bambuddy's `/cover` first, else the 3MF read off the printer; per-job cache, failure backoff, single-flight. Behind `GET /cover` and the Live Activity's `coverImage`. |
+| `printerFtps.js` | Downloads a job's 3MF from the printer over implicit FTPS (990, `bblp`, access code from `PRINTER_ACCESS_CODES`). |
+| `printFile.js` | Pure 3MF helpers: the file names a job is stored under (`/` → `2f`), where to look, plate render extraction. |
+| `coverRender.js` | Resize/format of a cover for `GET /cover` (PNG, baseline JPEG, raw RGB565). |
 | `apnsAuth.js` | ES256 JWT construction/caching for APNs auth (per environment). |
 | `apnsClient.js` | Raw HTTP/2 POST to APNs, `shouldRemoveToken`/`ok` result shape. |
 | `payload.js` | Builds the three APNs payload shapes (push-to-start, activity update/end, background wake). |
@@ -466,6 +470,14 @@ value can look flat over a single 15-30s poll window, so a naive "flat for N tic
 misfire on normal data).
 
 ### Images (`coverImage` / `liveSnapshot`)
+
+`coverImage` goes through `printerCover.js`, the same source as the `GET /cover` API (see README,
+"Cover image API"): Bambuddy's `/cover`, and when that has nothing, the job's 3MF read straight off
+the printer over FTPS for a printer listed in `PRINTER_ACCESS_CODES`. Bambuddy finds no cover for a
+cloud print (it reads the Bambu Cloud S3 download link as internal storage and skips the lookup) or
+for a job name with a `/` (stored by the printer as `2f`) -- maziggy/bambuddy#3382, closed as out
+of scope -- so this is the only way those prints get one. The rest of this section describes the
+Bambuddy side.
 
 Bambuddy: `GET /{id}/cover` (plate-preview render, static per job) is Bearer-authenticated with
 the API key like every other read (#23 -- Bambuddy moved it from the camera stream token to

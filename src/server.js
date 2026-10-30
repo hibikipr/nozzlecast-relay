@@ -1,12 +1,22 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const { normalizedID } = require('./parsing');
+const { CoverUnavailableError } = require('./printerCover');
+const { renderCover, parseRenderOptions, InvalidRenderOptions } = require('./coverRender');
 
 // Constant-time comparison, so response timing can't be used to guess the secret byte by byte.
-// Both sides are hashed first because timingSafeEqual requires equal-length inputs.
+// timingSafeEqual needs equal-length inputs, so both sides are zero-padded to the longer one and
+// the lengths are compared separately. They used to be SHA-256'd to equalize them instead, which
+// CodeQL reads as password hashing (js/insufficient-password-hash) though nothing is stored.
 function secretsMatch(provided, expected) {
-  const digest = (value) => crypto.createHash('sha256').update(value).digest();
-  return crypto.timingSafeEqual(digest(provided), digest(expected));
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  const length = Math.max(a.length, b.length, 1);
+  const paddedA = Buffer.alloc(length);
+  const paddedB = Buffer.alloc(length);
+  a.copy(paddedA);
+  b.copy(paddedB);
+  return crypto.timingSafeEqual(paddedA, paddedB) && a.length === b.length;
 }
 
 function requireAuth(authSecret) {
@@ -14,6 +24,19 @@ function requireAuth(authSecret) {
     if (!secretsMatch(req.get('authorization') || '', `Bearer ${authSecret}`)) {
       return res.status(401).json({ error: 'unauthorized' });
     }
+    next();
+  };
+}
+
+// For the read-only image API: any of `secrets`, as a Bearer header or, for a client that can't
+// set headers (a microcontroller's simplest HTTP GET, an <img> tag), a `key` query parameter.
+function requireAnyKey(secrets) {
+  return (req, res, next) => {
+    const header = req.get('authorization') || '';
+    const provided = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : (typeof req.query.key === 'string' ? req.query.key : '');
+    // Every secret is compared, so the timing doesn't say which one (if any) matched.
+    const matched = secrets.map((secret) => secretsMatch(provided, secret)).includes(true);
+    if (!provided || !matched) return res.status(401).json({ error: 'unauthorized' });
     next();
   };
 }
@@ -32,9 +55,53 @@ function handleAsync(route, handler) {
   };
 }
 
-function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret }) {
+function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret, coverService = null, coverApiKey = null }) {
   const app = express();
   app.use(express.json());
+
+  // The cover image (sliced plate render) of a printer's current or last job, for any client --
+  // NozzleCast, a dashboard, a microcontroller display. printerID is the printer's name in any
+  // normalization ("Vic H2C", "vich2c") or its serial number. See README "Cover image API" for the
+  // query options. Answers 304 to a matching If-None-Match, so a client can poll cheaply: the
+  // ETag changes only when the job (or the asked-for rendering) does.
+  app.get('/cover/:printerID', requireAnyKey([authSecret, coverApiKey].filter(Boolean)), handleAsync('/cover', async (req, res) => {
+    if (!coverService) return res.status(503).json({ error: 'cover images are not set up on this relay' });
+    let options;
+    try {
+      options = parseRenderOptions(req.query);
+    } catch (error) {
+      if (error instanceof InvalidRenderOptions) return res.status(400).json({ error: error.message });
+      throw error;
+    }
+
+    const printer = await coverService.findPrinter(req.params.printerID);
+    if (!printer) return res.status(404).json({ error: 'no such printer' });
+    let cover;
+    try {
+      cover = await coverService.cover(printer, { view: req.query.view === 'top' ? 'top' : null });
+    } catch (error) {
+      if (error instanceof CoverUnavailableError) return res.status(404).json({ error: error.message });
+      throw error;
+    }
+
+    const variant = [options.width, options.height, options.format, options.quality, options.background, req.query.view === 'top' ? 'top' : ''].join(',');
+    const etag = `${cover.etag.slice(0, -1)}-${crypto.createHash('sha256').update(variant).digest('hex').slice(0, 8)}"`;
+    res.set({
+      ETag: etag,
+      'Cache-Control': 'no-cache',
+      'X-Print-Job': encodeURIComponent(cover.jobName),
+      'X-Cover-Source': cover.source,
+    });
+    if (req.get('if-none-match') === etag) return res.status(304).end();
+
+    const rendered = await renderCover(cover.png, options);
+    res.set({
+      'Content-Type': rendered.contentType,
+      'X-Image-Width': String(rendered.width),
+      'X-Image-Height': String(rendered.height),
+    });
+    res.status(200).send(rendered.body);
+  }));
 
   app.get('/healthz', (req, res) => {
     res.status(200).json({ ok: true });
