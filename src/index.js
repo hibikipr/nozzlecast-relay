@@ -63,54 +63,48 @@ async function main() {
   const printerIdCache = new PrinterIdCache({ bambuddyClient });
   const coverService = new PrinterCoverService({ bambuddyClient, accessCodes: config.printerAccessCodes });
 
-  // Exact caps from PrintLiveActivityManager.downscaledCoverImage / NotificationService.
-  // downscaledThumbnail -- see imageDownscale.js for why matching these precisely (not
-  // approximating) matters: ActivityKit ends the whole Live Activity outright if the serialized
-  // content-state goes over budget, it doesn't just drop the offending field.
-  const COVER_IMAGE_MAX_DIMENSION = 36;
-  const COVER_IMAGE_MAX_BYTES = 1000;
-  const LIVE_SNAPSHOT_MAX_DIMENSION = 40;
-  const LIVE_SNAPSHOT_MAX_BYTES = 1300;
+  // Exact caps from CoverImageProcessing in NozzleCastShared -- see imageDownscale.js for why
+  // matching these precisely (not approximating) matters: ActivityKit ends the whole Live
+  // Activity outright if the serialized content-state goes over budget, it doesn't just drop the
+  // offending field. 2200 bytes (~2.9KB once base64-encoded) is the cover's share now that the
+  // content-state no longer carries a camera frame (liveSnapshot is always sent null).
+  const COVER_IMAGE_MAX_DIMENSION = 96;
+  const COVER_IMAGE_MAX_BYTES = 2200;
 
-  // Fetches+downscales one of Bambuddy's two camera-backed images. `fetchRaw` owns whatever
-  // credential its endpoint actually needs -- cover() is Bearer-authenticated like the rest of
-  // the client, cameraSnapshot() needs its own fresh stream token, minted by the caller (see
-  // bambuddyClient.js for why these two differ). Lets a downscale-to-null (still over budget at
-  // the quality floor) come back as null same as any other failure -- both mean "no image field
+  // Fetches+downscales the cover render. Lets a downscale-to-null (still over budget at the
+  // quality floor) come back as null same as any other failure -- both mean "no image field
   // this update," never a thrown error that would abort the whole enrichment attempt.
-  const fetchDownscaledCameraImage = async (bambuddyPrinterId, fetchRaw, { maxDimension, maxBytes }) => {
+  const fetchDownscaledCover = async (bambuddyPrinterId, fetchRaw) => {
     const raw = await fetchRaw(bambuddyPrinterId);
-    const downscaled = await downscaleImage(raw, { maxDimension, maxBytes });
+    const downscaled = await downscaleCover(raw, { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES });
     return downscaled ? downscaled.toString('base64') : null;
   };
 
   // Best-effort enrichment of a content-state (progress, job name, layer/temperature telemetry,
-  // estimated end time, and the cover/live-camera images) -- fails open on any error (printer not
+  // estimated end time, and the cover image) -- fails open on any error (printer not
   // found, Bambuddy unreachable/slow, malformed response), same philosophy as the startup APNs
   // auth check's timeout race: a slow/unreachable Bambuddy must never stall or crash a push, it
   // should just fall back to a content-state with those fields null.
   //
-  // The numeric telemetry fetch (status + enrichmentFromStatus) and the two image fetches are
+  // The numeric telemetry fetch (status + enrichmentFromStatus) and the cover fetch are
   // DELIBERATELY separate fail-open boundaries, not one big try/catch around everything --
-  // confirmed live that a single camera/snapshot 503 (Bambuddy's camera endpoint is far less
-  // reliable than its status endpoint) discarded an otherwise-fully-successful enrichment
+  // confirmed live that a single camera 503 discarded an otherwise-fully-successful enrichment
   // entirely, sending progress=0/estimatedEndAt=null for a print that was actually well
   // underway with a perfectly good status response -- froze the Live Activity's display for
-  // however long until the next event. An image fetch failing should only cost that one image
-  // field, never the numeric fields a live-snapshot/coverImage failure has nothing to do with.
+  // however long until the next event. An image fetch failing should only cost that image
+  // field, never the numeric fields it has nothing to do with.
   //
   // coverImage is static for the whole job, so it's fetched+downscaled at most once per print and
   // cached on activityTokenStore's per-printer record from then on (checked here before ever
-  // re-fetching); liveSnapshot is meant to look "live," so includeLiveSnapshot callers (progress/
-  // end events) get a fresh fetch+mint every time rather than a cached one -- push-to-start omits
-  // it entirely rather than spending a stream-token mint on an image that's discarded unused.
+  // re-fetching). liveSnapshot (the camera frame) is no longer sent: NozzleCast's Live Activity
+  // only shows the cover, and dropping the frame gave the cover its share of the byte budget.
   //
   // The poller already knows Bambuddy's numeric id for the printer it's reporting on (it just
   // listed printers this tick), so it passes it through and the name->id cache is only the
   // fallback. The cache alone only refreshed on a miss, so a printer re-added in Bambuddy under
   // the same name got a new id the cache never learned, and every enrichment kept hitting the old
   // one until the relay restarted.
-  const fetchEnrichment = async (printerID, name, { includeLiveSnapshot = false, prefetchedStatus = null, bambuddyPrinterId: knownPrinterId = null } = {}) => {
+  const fetchEnrichment = async (printerID, name, { prefetchedStatus = null, bambuddyPrinterId: knownPrinterId = null } = {}) => {
     let bambuddyPrinterId;
     let enrichment;
     try {
@@ -150,7 +144,7 @@ async function main() {
       // Through the cover service rather than Bambuddy's /cover directly, so a Live Activity gets
       // a cover for a print Bambuddy can't find one for (read off the printer instead), and the
       // render the /cover API serves is the same one, fetched once.
-      fetchCover: () => fetchDownscaledCameraImage(
+      fetchCover: () => fetchDownscaledCover(
         bambuddyPrinterId,
         async (id) => {
           const printers = await bambuddyClient.printers();
@@ -158,24 +152,8 @@ async function main() {
           if (!printer) throw new Error(`Bambuddy no longer lists printer ${id}`);
           return (await coverService.cover(printer, { status: prefetchedStatus })).png;
         },
-        { maxDimension: COVER_IMAGE_MAX_DIMENSION, maxBytes: COVER_IMAGE_MAX_BYTES },
       ),
     });
-
-    if (includeLiveSnapshot) {
-      try {
-        enrichment.liveSnapshot = await fetchDownscaledCameraImage(
-          bambuddyPrinterId,
-          async (id) => bambuddyClient.cameraSnapshot(id, await bambuddyClient.mintCameraStreamToken()),
-          { maxDimension: LIVE_SNAPSHOT_MAX_DIMENSION, maxBytes: LIVE_SNAPSHOT_MAX_BYTES },
-        );
-      } catch (error) {
-        console.error(`liveSnapshot fetch failed for printer "${name}", sending this update without it:`, error);
-        enrichment.liveSnapshot = null;
-      }
-    } else {
-      enrichment.liveSnapshot = null;
-    }
 
     return enrichment;
   };
@@ -385,9 +363,7 @@ async function main() {
 
     const startedAt = activity.startedAt ? new Date(activity.startedAt) : new Date();
 
-    // includeLiveSnapshot: true because this IS an update/end event -- liveSnapshot is meant to
-    // look "live," so it's fetched fresh here every time rather than reused from a cache.
-    const enrichment = await fetchEnrichment(printerID, name, { includeLiveSnapshot: true, prefetchedStatus, bambuddyPrinterId });
+    const enrichment = await fetchEnrichment(printerID, name, { prefetchedStatus, bambuddyPrinterId });
     // No longer hardcoded to 1 for "end" -- a genuine finish naturally reads ~100% from real
     // data anyway, but a stopped/cancelled print did NOT necessarily reach 100%, and claiming it
     // did is just factually wrong (a print stopped at 60% showing "100%" on its way out).
@@ -414,7 +390,6 @@ async function main() {
       rightNozzleTempC: enrichment?.rightNozzleTempC ?? null,
       bedTempC: enrichment?.bedTempC ?? null,
       coverImage: enrichment?.coverImage ?? null,
-      liveSnapshot: enrichment?.liveSnapshot ?? null,
       issueSeverity,
       issueCount,
       stageDetail: filterStageDetail(enrichment?.stageDetail, stateLabel),

@@ -4,61 +4,72 @@ const STARTING_QUALITY = 0.95;
 const QUALITY_STEP = 0.05;
 const QUALITY_FLOOR = 0.1;
 
-// What a transparent pixel becomes, since JPEG has no alpha. Plate cover renders are PNGs with a
-// transparent background, and sharp's own default is black -- which a dark filament model
-// vanished into on the Live Activity's dark cover tile. A neutral mid-grey keeps both dark and
-// light filaments visible. Must match PrintLiveActivityManager.coverBackdrop in NozzleCast, which
-// downscales the same covers itself when it creates an activity locally. A no-op for camera
-// frames, which are opaque.
-const TRANSPARENCY_BACKGROUND = '#9a9a9a';
+// What a cover's transparent background becomes: the image has to be flattened before it's
+// squeezed into the content-state, and a single fixed colour always hides some filament -- black
+// swallowed dark models, a mid-grey swallowed grey ones. So it follows the model: a light model
+// goes on the dark backdrop, a dark one on the light backdrop. NozzleCast's widget fills the rest
+// of its cover tile with the image's own corner colour, so either one blends in. Must match
+// CoverImageProcessing.backdropDark/backdropLight in NozzleCastShared, which does the same for
+// covers the app downscales itself.
+const BACKDROP_DARK = '#1f2329';
+const BACKDROP_LIGHT = '#c4c9d1';
+// Relative luminance (0-1) of the model's average colour above which it counts as light.
+const LIGHT_MODEL_THRESHOLD = 0.5;
+// Pixels at least this opaque count as model when averaging its colour.
+const MODEL_ALPHA_THRESHOLD = 128;
 
-// Matches PrintLiveActivityManager.downscaledCoverImage / NotificationService.downscaledThumbnail
-// exactly, not an approximation -- ActivityKit's real budget for the whole serialized
-// content-state is close to 4KB (a Data field costs ~33% more once base64-encoded on top of its
-// raw byte count), and going over doesn't fail gracefully: the system ends the Live Activity
-// outright rather than just dropping that one update.
-//
-// Resize to the REAL target pixel dimensions, not a platform-scaled default: the Swift version's
-// whole bug was UIGraphicsImageRenderer silently rendering at the device's 2x/3x screen scale, 9x
-// the intended pixel count, which no amount of JPEG quality reduction could claw back under
-// budget. There's no equivalent "device scale" concept to fight in Node/sharp, but call this out
-// so nobody reintroduces something similar via a DPI/density option.
-//
-// Starts JPEG quality high (0.95) and steps down by 0.05 while still over maxBytes, returning the
-// first (i.e. highest-quality) encoding that fits -- NOT starting at some already-conservative
-// quality under the assumption it'll usually need to come down anyway. A 36-40px thumbnail is
-// tiny enough that even 90%+ quality routinely fits maxBytes with room to spare (confirmed live:
-// a real 1280x720 camera frame downscaled to 40px hit budget at quality=95, using 906 of 1300
-// bytes, versus 466 bytes at quality=50 -- the old starting point was leaving most of the
-// already-budgeted, already-safe byte allowance on the table for no reason, which is exactly why
-// these images looked more pixelated than the byte budget actually required). If still over
-// budget at the 0.1 floor, returns null (not a smaller-than-requested image) -- fails closed the
-// same way the Swift guard does, since a blown budget risks the whole activity, not just this
-// one field.
-//
-// The source is decoded and resized ONCE, to raw pixels, and only the JPEG encode of that tiny
-// raw image repeats per quality step. Each step used to decode and resize the full camera frame
-// all over again -- up to 18 full-frame decodes for one image when nothing fit early.
-async function downscaleImage(buffer, { maxDimension, maxBytes }) {
-  const { width, height } = await sharp(buffer).metadata();
-  const scale = Math.min(maxDimension / Math.max(width, height), 1);
-  const targetWidth = Math.max(1, Math.round(width * scale));
-  const targetHeight = Math.max(1, Math.round(height * scale));
+function modelIsLight({ data, info }) {
+  let sum = 0;
+  let count = 0;
+  for (let offset = 0; offset < data.length; offset += info.channels) {
+    if (info.channels === 4 && data[offset + 3] < MODEL_ALPHA_THRESHOLD) continue;
+    sum += (0.2126 * data[offset] + 0.7152 * data[offset + 1] + 0.0722 * data[offset + 2]) / 255;
+    count += 1;
+  }
+  return count > 0 && sum / count > LIGHT_MODEL_THRESHOLD;
+}
 
-  const { data: pixels, info } = await sharp(buffer)
-    .resize(targetWidth, targetHeight)
-    .flatten({ background: TRANSPARENCY_BACKGROUND })
+// Downscales a cover render for a Live Activity's content-state, as WebP within `maxBytes`.
+//
+// ActivityKit's budget for the whole serialized content-state is close to 4KB (a Data field
+// costs ~33% more once base64-encoded), and going over doesn't fail gracefully: the system ends
+// the Live Activity outright rather than just dropping that one update. So the result has to fit
+// exactly, and every byte of it should go on the model:
+//
+// - Trimmed first. A cover is the model on a mostly transparent canvas (a real 512x512 render's
+//   model spanned 184x215), so without the trim most of the pixels described empty canvas.
+// - WebP, not JPEG: about 40% of JPEG's size for the same 96px cover, so it fits ~2.7x the
+//   pixels. NozzleCast decodes it with ImageIO, which reads WebP on every iOS it supports.
+// - Resized to the REAL target pixel dimensions, never enlarged. Don't reintroduce a DPI/density
+//   option: the Swift version's original bug was rendering at the device's 2x/3x scale.
+//
+// Quality starts high (0.95) and steps down by 0.05 while over maxBytes, returning the first --
+// i.e. best -- encoding that fits. Still over budget at the 0.1 floor returns null, not a
+// smaller image: fails closed, since a blown budget risks the whole activity. The source is
+// decoded and resized once, to raw pixels; only the encode repeats per quality step.
+async function downscaleCover(buffer, { maxDimension, maxBytes }) {
+  const trimmed = await sharp(buffer).ensureAlpha().trim().toBuffer();
+  const { data: rgba, info: rgbaInfo } = await sharp(trimmed)
+    .resize(maxDimension, maxDimension, { fit: 'inside', withoutEnlargement: true })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const background = modelIsLight({ data: rgba, info: rgbaInfo }) ? BACKDROP_DARK : BACKDROP_LIGHT;
+
+  const rawRGBA = { raw: { width: rgbaInfo.width, height: rgbaInfo.height, channels: rgbaInfo.channels } };
+  const { data: pixels, info } = await sharp(rgba, rawRGBA)
+    .flatten({ background })
     .raw()
     .toBuffer({ resolveWithObject: true });
   const rawInput = { raw: { width: info.width, height: info.height, channels: info.channels } };
 
   for (let quality = STARTING_QUALITY; quality >= QUALITY_FLOOR - 1e-9; quality -= QUALITY_STEP) {
     const encoded = await sharp(pixels, rawInput)
-      .jpeg({ quality: Math.round(quality * 100) })
+      .webp({ quality: Math.round(quality * 100) })
       .toBuffer();
     if (encoded.length <= maxBytes) return encoded;
   }
   return null;
 }
 
-module.exports = { downscaleImage };
+module.exports = { downscaleCover, BACKDROP_DARK, BACKDROP_LIGHT };

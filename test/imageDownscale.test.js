@@ -1,13 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const sharp = require('sharp');
-const { downscaleImage } = require('../src/imageDownscale');
+const { downscaleCover, BACKDROP_DARK, BACKDROP_LIGHT } = require('../src/imageDownscale');
 
 // Solid-color images compress trivially at any quality; a random-noise image is what actually
-// forces the quality-reduction loop to engage, since JPEG can't compress noise anywhere near as
+// forces the quality-reduction loop to engage, since WebP can't compress noise anywhere near as
 // well as a flat color.
-function solidImage(width, height) {
-  return sharp({ create: { width, height, channels: 3, background: { r: 100, g: 150, b: 200 } } })
+function solidImage(width, height, color = { r: 100, g: 150, b: 200 }) {
+  return sharp({ create: { width, height, channels: 3, background: color } })
     .png()
     .toBuffer();
 }
@@ -18,93 +18,124 @@ function noiseImage(width, height) {
   return sharp(bytes, { raw: { width, height, channels: 3 } }).png().toBuffer();
 }
 
-test('downscaleImage resizes to the real target pixel dimensions, no upscale', async () => {
+const transparent = { r: 0, g: 0, b: 0, alpha: 0 };
+
+// A cover render as Bambu exports it: the model in the middle of a mostly transparent canvas.
+function modelOnTransparent({ canvas = 200, modelWidth = 50, modelHeight = 100, color }) {
+  const model = { create: { width: modelWidth, height: modelHeight, channels: 4, background: { ...color, alpha: 1 } } };
+  return sharp({ create: { width: canvas, height: canvas, channels: 4, background: transparent } })
+    .composite([{ input: model, left: (canvas - modelWidth) / 2, top: (canvas - modelHeight) / 2 }])
+    .png()
+    .toBuffer();
+}
+
+// An L-shaped model, so the trimmed image keeps a transparent (backdrop) top-right corner.
+async function lShapedModel(color) {
+  // The model spans x 70-130, y 50-150; cutting out its top-right quarter leaves an L.
+  const block = await modelOnTransparent({ canvas: 200, modelWidth: 60, modelHeight: 100, color });
+  return sharp(block)
+    .composite([{ input: { create: { width: 30, height: 50, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } } }, left: 100, top: 50, blend: 'dest-out' }])
+    .png()
+    .toBuffer();
+}
+
+async function topRightPixel(buffer) {
+  const { data, info } = await sharp(buffer).raw().toBuffer({ resolveWithObject: true });
+  const offset = (info.width - 1) * info.channels;
+  return [data[offset], data[offset + 1], data[offset + 2]];
+}
+
+function hexToRgb(hex) {
+  const value = parseInt(hex.slice(1), 16);
+  return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+}
+
+function assertNear(actual, expected, label) {
+  actual.forEach((channel, index) => {
+    assert.ok(Math.abs(channel - expected[index]) <= 10, `${label}: expected ~${expected}, got ${actual}`);
+  });
+}
+
+test('downscaleCover encodes WebP sized to maxDimension', async () => {
   const source = await solidImage(512, 512);
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1000 });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: 2200 });
 
   assert.ok(result);
   const meta = await sharp(result).metadata();
-  assert.equal(meta.width, 36);
-  assert.equal(meta.height, 36);
-  assert.equal(meta.format, 'jpeg');
+  assert.equal(meta.format, 'webp');
+  assert.equal(meta.width, 96);
+  assert.equal(meta.height, 96);
 });
 
-test('downscaleImage never upscales a source smaller than maxDimension', async () => {
+test('downscaleCover never upscales a source smaller than maxDimension', async () => {
   const source = await solidImage(20, 10);
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1000 });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: 2200 });
 
   const meta = await sharp(result).metadata();
   assert.equal(meta.width, 20);
   assert.equal(meta.height, 10);
 });
 
-test('downscaleImage preserves aspect ratio when scaling a non-square source', async () => {
-  const source = await solidImage(1280, 720);
-  const result = await downscaleImage(source, { maxDimension: 40, maxBytes: 1300 });
+test('downscaleCover trims the transparent margin so the model fills the image', async () => {
+  // Regression for the blur: a real 512x512 render's model spans only 184x215, so without the
+  // trim most of the tiny budget went on empty canvas.
+  const source = await modelOnTransparent({ modelWidth: 50, modelHeight: 100, color: { r: 200, g: 60, b: 60 } });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: 2200 });
 
   const meta = await sharp(result).metadata();
-  assert.equal(meta.width, 40);
-  assert.equal(meta.height, Math.round(720 * (40 / 1280)));
+  assert.equal(meta.height, 96);
+  assert.equal(meta.width, 48);
 });
 
-test('downscaleImage stays under maxBytes for an easily-compressible image', async () => {
+test('downscaleCover puts a dark model on the light backdrop', async () => {
+  // Regression for a real cover: a dark filament model vanished when its transparency became
+  // black, and a fixed mid-grey hid grey models instead -- the backdrop has to follow the model.
+  const result = await downscaleCover(await lShapedModel({ r: 40, g: 30, b: 90 }), { maxDimension: 96, maxBytes: 2200 });
+
+  assertNear(await topRightPixel(result), hexToRgb(BACKDROP_LIGHT), 'backdrop behind a dark model');
+});
+
+test('downscaleCover puts a light model on the dark backdrop', async () => {
+  const result = await downscaleCover(await lShapedModel({ r: 170, g: 170, b: 170 }), { maxDimension: 96, maxBytes: 2200 });
+
+  assertNear(await topRightPixel(result), hexToRgb(BACKDROP_DARK), 'backdrop behind a light model');
+});
+
+test('downscaleCover stays under maxBytes for an easily-compressible image', async () => {
   const source = await solidImage(512, 512);
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1000 });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: 2200 });
 
-  assert.ok(result.length <= 1000);
+  assert.ok(result.length <= 2200);
 });
 
-test('downscaleImage steps quality down when quality 0.5 doesn\'t fit the budget', async () => {
+test('downscaleCover steps quality down when the top quality doesn\'t fit the budget', async () => {
   const source = await noiseImage(200, 200);
-  // A 36x36 noise image measured (across several runs) ~404-414B at quality 0.5 and
-  // ~336-347B at quality 0.3 -- 390 reliably sits between the two (never satisfied at 0.5,
-  // always satisfied by 0.3), so hitting budget requires the loop to actually step quality
-  // down, not just succeed on the first attempt.
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 390 });
+  const topQuality = await sharp(source).resize(96, 96).webp({ quality: 95 }).toBuffer();
+  const budget = Math.floor(topQuality.length * 0.6);
+
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: budget });
 
   assert.ok(result, 'expected a result at some quality step, not an immediate floor failure');
-  assert.ok(result.length <= 390);
+  assert.ok(result.length <= budget);
 });
 
-test('downscaleImage returns null when even the quality floor is over budget', async () => {
+test('downscaleCover returns null when even the quality floor is over budget', async () => {
   const source = await noiseImage(200, 200);
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1 });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: 1 });
 
   assert.equal(result, null);
 });
 
-test('downscaleImage fills transparency with the cover backdrop grey, not JPEG\'s default black', async () => {
-  // Regression test for a real bug: a plate cover render is a PNG with a transparent background,
-  // and a JPEG has no alpha -- sharp filled it with black, so a dark filament model vanished into
-  // its own background on the Live Activity's dark cover tile.
-  const source = await sharp({ create: { width: 144, height: 144, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
-    .png()
-    .toBuffer();
-  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1000 });
-
-  const { data } = await sharp(result).raw().toBuffer({ resolveWithObject: true });
-  for (const channel of [data[0], data[1], data[2]]) {
-    assert.ok(Math.abs(channel - 0x9a) <= 6, `expected the backdrop grey (~0x9A) in each channel, got ${[data[0], data[1], data[2]]}`);
-  }
-});
-
-test('downscaleImage picks the best quality that fits, not just the first one under budget', async () => {
-  // Regression test for a real bug: the quality-search loop used to start at 0.5 and return
-  // immediately, so a photo that already fit comfortably at 0.5 (most tiny 36-40px thumbnails do)
-  // never got a chance at 0.6-0.95 -- routinely leaving 60%+ of the already-safe, already-budgeted
-  // byte allowance unused and looking needlessly pixelated for no size-budget benefit. A real
-  // 1280x720 camera frame downscaled to 40px measured 466B at quality 0.5 vs 906B at quality
-  // 0.95 (maxBytes 1300) -- so "does the loop settle for the old low-quality byte count when a
-  // much better one still fits" is a real, previously-failing assertion, not a hypothetical one.
+test('downscaleCover picks the best quality that fits, not just the first one under budget', async () => {
   const source = await noiseImage(400, 400);
-  const lowQualityReference = await sharp(source).resize(40, 40).jpeg({ quality: 50 }).toBuffer();
+  const lowQualityReference = await sharp(source).resize(96, 96).webp({ quality: 50 }).toBuffer();
   const generousBudget = lowQualityReference.length * 3;
 
-  const result = await downscaleImage(source, { maxDimension: 40, maxBytes: generousBudget });
+  const result = await downscaleCover(source, { maxDimension: 96, maxBytes: generousBudget });
 
   assert.ok(result.length <= generousBudget);
   assert.ok(
     result.length > lowQualityReference.length,
-    `expected a higher-quality (larger) result than the old quality=0.5 starting point (${lowQualityReference.length}B) when ${generousBudget}B was available, got ${result.length}B`,
+    `expected a higher-quality (larger) result than quality=50 (${lowQualityReference.length}B) when ${generousBudget}B was available, got ${result.length}B`,
   );
 });
