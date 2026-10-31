@@ -410,12 +410,13 @@ though Apple doesn't document a number and this hasn't been independently confir
 
 `bambuddyEnrichment.js`'s `enrichmentFromStatus(status)` maps a Bambuddy `/status` DTO onto
 content-state fields, called through `index.js`'s `fetchEnrichment()` — a fail-open wrapper with
-**three independent try/catch boundaries**, not one shared one:
+**two independent try/catch boundaries**, not one shared one:
 
 1. Numeric telemetry (`status` fetch + `enrichmentFromStatus`) — failure here means "nothing to
    send, fall back to text-only fields."
 2. `coverImage` fetch — failure here costs only that field.
-3. `liveSnapshot` fetch — failure here costs only that field.
+
+(`liveSnapshot`, the camera frame, was a third; it's no longer sent — see Images below.)
 
 These were originally one shared `try`/`catch`; confirmed live that a single camera-endpoint `503`
 (Bambuddy's camera endpoints are meaningfully less reliable than its status endpoint) discarded an
@@ -438,7 +439,7 @@ an earlier version assumed):
 | `bedTempC` | `Math.round(status.temperatures.bed)` | Same reasoning. |
 | `estimatedEndAt` | `now + status.remaining_time minutes` (see below) | |
 | `coverImage` | `GET /cover?token=...`, downscaled, cached per print | See Images below. |
-| `liveSnapshot` | `GET /camera/snapshot?token=...`, downscaled, fetched fresh every update | See Images below. |
+| `liveSnapshot` | Always `null` | No longer sent; see Images below. |
 | `stageDetail` | `status.stg_cur_name`, via `filterStageDetail(stageDetail, stateLabel)` | Bambuddy's own server-resolved name for its internal `stg_cur` stage (e.g. "Purifying the chamber air", "Heating chamber") — detail beyond the coarse Printing/Paused/Complete `stateLabel`. In particular this is what's actually happening during the window after a print reaches 100% but before `gcode_state` leaves RUNNING to run post-print chamber purification, which is otherwise invisible from `progress`/`stateLabel` alone. `filterStageDetail` suppresses it when it would just echo `stateLabel` (most commonly stage 0's "Printing" while `stateLabel` is already "Printing") — see `bambuddyEnrichment.js`. |
 
 ### `remaining_time` units and trust
@@ -469,7 +470,13 @@ heuristic has been added to catch it (deliberately — a legitimately slowly-dec
 value can look flat over a single 15-30s poll window, so a naive "flat for N ticks" check would
 misfire on normal data).
 
-### Images (`coverImage` / `liveSnapshot`)
+### Images (`coverImage`)
+
+NozzleCast's Live Activity shows the cover only, never the camera frame, so `liveSnapshot` is
+always sent `null` (the key stays for older app builds that decode it). The app shows a sharp copy
+of the cover that it fetches itself from `GET /cover` and keeps in its App Group; `coverImage` in
+the content-state is the fallback for when that copy isn't there yet (e.g. a push-to-start before
+the app has woken), so it has to look as good as a few kilobytes allow.
 
 `coverImage` goes through `printerCover.js`, the same source as the `GET /cover` API (see README,
 "Cover image API"): Bambuddy's `/cover`, and when that has nothing, the job's 3MF read straight off
@@ -481,11 +488,8 @@ Bambuddy side.
 
 Bambuddy: `GET /{id}/cover` (plate-preview render, static per job) is Bearer-authenticated with
 the API key like every other read (#23 -- Bambuddy moved it from the camera stream token to
-`printers:read`); `GET /{id}/camera/snapshot?token=...` (live camera frame) still needs a
-short-lived token from `POST /api/v1/printers/camera/stream-token`. `coverImage` is fetched once
-per print and cached on `activityTokenStore`'s per-printer record (checked before ever
-re-fetching); `liveSnapshot` is fetched fresh on every update (meant to look "live"), never on
-push-to-start (would spend a stream-token mint on an image discarded unused).
+`printers:read`). `coverImage` is fetched once per print and cached on `activityTokenStore`'s
+per-printer record (checked before ever re-fetching).
 
 **A missing cover is given up on after 3 attempts per print** (`coverImageCache.js`,
 counted in the record's `coverImageFailures`, reset by `startPrint()`). Bambuddy answers `/cover`
@@ -497,22 +501,26 @@ failed attempt too.
 **Hard budget constraint**: ActivityKit's real budget for the whole serialized content-state is
 close to 4KB, and a `Data` field costs ~33% more once base64-encoded. Going over doesn't fail
 gracefully — the system **ends the Live Activity outright** rather than dropping just that update.
-`imageDownscale.js` matches the app's own downscale algorithm exactly (not approximated):
+`imageDownscale.js`'s `downscaleCover` keeps the cover inside a fixed byte cap, matching the app's
+own fallback downscale (`CoverImageProcessing` in NozzleCastShared):
 
 | Field | maxDimension | maxBytes |
 |---|---|---|
-| `coverImage` | 36pt | 1000 |
-| `liveSnapshot` | 40pt | 1300 |
+| `coverImage` | 96px | 2200 |
 
-Algorithm: `scale = min(maxDimension / max(width, height), 1)` (never upscale) → resize at a render
-scale of 1 (no device-scale multiplier to fight in Node, unlike the Swift side's
-`UIGraphicsImageRenderer` pitfall) → encode JPEG at quality 0.95 → while over `maxBytes` and quality
-> 0.1, reduce quality by 0.05 and re-encode (#24 -- starting at 0.5 left most of the budget
-unused) → if still over budget at the quality floor, omit the
-image for that update entirely rather than exceeding the cap. Verified `sharp` actually works at
+Algorithm: trim the transparent margin (a real 512x512 render's model spanned only 184x215) →
+resize to fit `maxDimension`, never enlarging, at a render scale of 1 → flatten the transparency
+onto a backdrop picked from the model's average luminance (a light model on `#1f2329`, a dark one
+on `#c4c9d1`; a single fixed colour always hid some filament — black swallowed dark models, mid-grey
+grey ones) → encode **WebP** (about 40% of JPEG's size here, so ~2.7x the pixels; ImageIO decodes
+it) at quality 0.95 → while over `maxBytes` and quality > 0.1, reduce quality by 0.05 and re-encode
+(#24 -- starting at 0.5 left most of the budget unused) → if still over budget at the quality
+floor, omit the image for that update entirely rather than exceeding the cap. NozzleCast fills its
+cover tile with the image's corner colour, so either backdrop blends in. Verified `sharp` actually works at
 runtime inside the real `node:20-alpine` (musl) Docker build, not just `npm install` succeeding.
-Measured worst case (both images at their exact byte caps, plus a real ~54-char `jobName`): 3389
-bytes total, comfortably under budget.
+The 2200-byte cap was the camera frame's 1300 plus the old cover's 1000, less a margin, so the
+worst case stays where it was measured before: 3389 bytes total with both old images at their caps
+and a real ~54-char `jobName`, comfortably under budget.
 
 ## Payload shapes
 
