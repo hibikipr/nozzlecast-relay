@@ -1,4 +1,5 @@
 const sharp = require('sharp');
+const { BACKDROP_DARK, BACKDROP_LIGHT, modelIsLight } = require('./imageDownscale');
 
 const MAX_DIMENSION = 2048;
 
@@ -17,7 +18,9 @@ function parseDimension(value, name) {
 //   width, height  fit the image inside this box, keeping its aspect ratio (never enlarged)
 //   format         png (default) | jpeg | rgb565
 //   quality        JPEG quality 1-100, default 80
-//   bg             RRGGBB the transparent background is flattened onto (jpeg/rgb565), default 000000
+//   bg             RRGGBB the transparent background is flattened onto (jpeg/rgb565), default 000000;
+//                  or auto: trimmed to the model, which goes on the backdrop for its brightness
+//                  (NozzleCast's two), padded out to the width x height box (any format)
 function parseRenderOptions(query) {
   const format = query.format || 'png';
   if (!['png', 'jpeg', 'jpg', 'rgb565'].includes(format)) {
@@ -28,13 +31,15 @@ function parseRenderOptions(query) {
     throw new InvalidRenderOptions('quality must be a whole number from 1 to 100');
   }
   const background = query.bg ?? '000000';
-  if (!/^[0-9a-fA-F]{6}$/.test(background)) throw new InvalidRenderOptions('bg must be RRGGBB hex');
+  if (background !== 'auto' && !/^[0-9a-fA-F]{6}$/.test(background)) {
+    throw new InvalidRenderOptions('bg must be RRGGBB hex or auto');
+  }
   return {
     width: parseDimension(query.width, 'width'),
     height: parseDimension(query.height, 'height'),
     format: format === 'jpg' ? 'jpeg' : format,
     quality,
-    background: `#${background}`,
+    background: background === 'auto' ? 'auto' : `#${background}`,
   };
 }
 
@@ -44,9 +49,33 @@ function parseRenderOptions(query) {
 // JPEGDEC) need. rgb565 is raw 16-bit pixels, little-endian, row by row with no header -- what an
 // ESP32 display driver can push straight to the panel; the X-Image-Width/-Height headers carry
 // its size.
+//
+// background 'auto' is NozzleCast's cover look: trimmed to the model (a render's model fills only
+// a corner of its canvas), on the dark backdrop for a light model and the light one for a dark
+// model, so no filament colour disappears into it. With both width and height the model is
+// centred in that box with the backdrop around it, so a client can show it edge to edge.
 async function renderCover(png, { width = null, height = null, format = 'png', quality = 80, background = '#000000' } = {}) {
   let image = sharp(png);
-  if (width || height) image = image.resize(width, height, { fit: 'inside', withoutEnlargement: true });
+  if (background === 'auto') {
+    const trimmed = await sharp(png).ensureAlpha().trim().toBuffer();
+    const pixels = await sharp(trimmed).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    background = modelIsLight(pixels) ? BACKDROP_DARK : BACKDROP_LIGHT;
+    image = sharp(trimmed);
+    if (width && height) {
+      image = image.resize(width, height, { fit: 'contain', background, withoutEnlargement: true });
+      // Never enlarged, so a small model can come back under the box: pad it out to the box.
+      const fitted = await image.png().toBuffer({ resolveWithObject: true });
+      const padX = width - fitted.info.width, padY = height - fitted.info.height;
+      image = sharp(fitted.data).extend({
+        left: Math.floor(padX / 2), right: Math.ceil(padX / 2), top: Math.floor(padY / 2), bottom: Math.ceil(padY / 2), background,
+      });
+    } else if (width || height) {
+      image = image.resize(width, height, { fit: 'inside', withoutEnlargement: true });
+    }
+    image = sharp(await image.flatten({ background }).png().toBuffer());
+  } else if (width || height) {
+    image = image.resize(width, height, { fit: 'inside', withoutEnlargement: true });
+  }
 
   if (format === 'png') {
     const { data, info } = await image.png().toBuffer({ resolveWithObject: true });
