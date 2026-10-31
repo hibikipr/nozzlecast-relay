@@ -4,6 +4,14 @@ const STARTING_QUALITY = 0.95;
 const QUALITY_STEP = 0.05;
 const QUALITY_FLOOR = 0.1;
 
+// What a transparent pixel becomes, since JPEG has no alpha. Plate cover renders are PNGs with a
+// transparent background, and sharp's own default is black -- which a dark filament model
+// vanished into on the Live Activity's dark cover tile. A neutral mid-grey keeps both dark and
+// light filaments visible. Must match PrintLiveActivityManager.coverBackdrop in NozzleCast, which
+// downscales the same covers itself when it creates an activity locally. A no-op for camera
+// frames, which are opaque.
+const TRANSPARENCY_BACKGROUND = '#9a9a9a';
+
 // Matches PrintLiveActivityManager.downscaledCoverImage / NotificationService.downscaledThumbnail
 // exactly, not an approximation -- ActivityKit's real budget for the whole serialized
 // content-state is close to 4KB (a Data field costs ~33% more once base64-encoded on top of its
@@ -39,6 +47,7 @@ async function downscaleImage(buffer, { maxDimension, maxBytes }) {
 
   const { data: pixels, info } = await sharp(buffer)
     .resize(targetWidth, targetHeight)
+    .flatten({ background: TRANSPARENCY_BACKGROUND })
     .raw()
     .toBuffer({ resolveWithObject: true });
   const rawInput = { raw: { width: info.width, height: info.height, channels: info.channels } };

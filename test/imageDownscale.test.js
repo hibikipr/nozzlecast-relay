@@ -73,6 +73,21 @@ test('downscaleImage returns null when even the quality floor is over budget', a
   assert.equal(result, null);
 });
 
+test('downscaleImage fills transparency with the cover backdrop grey, not JPEG\'s default black', async () => {
+  // Regression test for a real bug: a plate cover render is a PNG with a transparent background,
+  // and a JPEG has no alpha -- sharp filled it with black, so a dark filament model vanished into
+  // its own background on the Live Activity's dark cover tile.
+  const source = await sharp({ create: { width: 144, height: 144, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .png()
+    .toBuffer();
+  const result = await downscaleImage(source, { maxDimension: 36, maxBytes: 1000 });
+
+  const { data } = await sharp(result).raw().toBuffer({ resolveWithObject: true });
+  for (const channel of [data[0], data[1], data[2]]) {
+    assert.ok(Math.abs(channel - 0x9a) <= 6, `expected the backdrop grey (~0x9A) in each channel, got ${[data[0], data[1], data[2]]}`);
+  }
+});
+
 test('downscaleImage picks the best quality that fits, not just the first one under budget', async () => {
   // Regression test for a real bug: the quality-search loop used to start at 0.5 and return
   // immediately, so a photo that already fit comfortably at 0.5 (most tiny 36-40px thumbnails do)
