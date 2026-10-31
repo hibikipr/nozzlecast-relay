@@ -70,10 +70,16 @@ class PrinterCoverService {
 
     const viewKey = view === 'top' ? 'top' : 'default';
     const slot = `${normalizedID(printer.serial_number || printer.name)}|${viewKey}`;
-    const jobKey = `${printer.id}|${jobName}|${currentStatus.gcode_file ?? ''}|${viewKey}`;
+    const gcodeFile = currentStatus.gcode_file || '';
+    const jobKey = `${printer.id}|${jobName}|${gcodeFile}|${viewKey}`;
 
+    // A job that finishes drops its gcode_file from Bambuddy's status ("" from then on) but is
+    // still the same job, so its cover stays. Looking it up again right then is what failed: the
+    // cover was there all print long and gone (404, then backoff) the moment it finished.
     const cached = this.images.get(slot);
-    if (cached?.jobKey === jobKey) return { ...cached, jobName };
+    if (cached?.jobKey === jobKey || (!gcodeFile && cached?.jobName === jobName && cached?.printerId === printer.id)) {
+      return { ...cached, jobName };
+    }
 
     const failed = this.failures.get(slot);
     if (failed?.jobKey === jobKey && this.now() < failed.retryAt) {
@@ -89,7 +95,7 @@ class PrinterCoverService {
     try {
       const { png, source } = await lookup;
       const etag = `"${crypto.createHash('sha256').update(png).digest('hex').slice(0, 32)}"`;
-      const image = { jobKey, png, source, etag };
+      const image = { jobKey, jobName, printerId: printer.id, png, source, etag };
       this.images.set(slot, image);
       this.failures.delete(slot);
       return { ...image, jobName };
@@ -98,6 +104,9 @@ class PrinterCoverService {
       const count = latest?.jobKey === jobKey ? latest.count + 1 : 1;
       const backoff = Math.min(FAILURE_BACKOFF_MS * 2 ** (count - 1), MAX_FAILURE_BACKOFF_MS);
       this.failures.set(slot, { jobKey, count, retryAt: this.now() + backoff, reason: error.message });
+      // Once per backoff window (requests inside one get the stored reason above). Only successes
+      // were logged, which left a 404 with no trace of which source failed or why.
+      console.log(`Cover for printer "${printer.name}" unavailable (retry in ${backoff / 1000}s): ${error.message}`);
       throw error instanceof CoverUnavailableError ? error : new CoverUnavailableError(error.message);
     }
   }
