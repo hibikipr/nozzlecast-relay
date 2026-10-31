@@ -42,6 +42,10 @@ class BambuddyPoller {
     onCorrection,
     onBaselineInactive = async () => {},
     onDisconnected = async () => {},
+    // Asked each tick an active printer has no transition and no correction due: true sends an
+    // onCorrection now rather than at the next interval (the Live Activity's cover turning up
+    // after its push-to-start went out without it).
+    needsEarlyCorrection = async () => false,
     disconnectEndMs = DEFAULT_DISCONNECT_END_MS,
     now = () => Date.now(),
     hmsIssueDebouncer = new HmsIssueDebouncer(),
@@ -57,6 +61,7 @@ class BambuddyPoller {
     this.onCorrection = onCorrection;
     this.onBaselineInactive = onBaselineInactive;
     this.onDisconnected = onDisconnected;
+    this.needsEarlyCorrection = needsEarlyCorrection;
     this.disconnectEndMs = disconnectEndMs;
     this.now = now;
     this.hmsIssueDebouncer = hmsIssueDebouncer;
@@ -199,7 +204,8 @@ class BambuddyPoller {
     // on the very same tick -- two back-to-back pushes spending the device's private Live
     // Activity update budget on identical content.
     const correctionDue = isActive && this.now() - (previous.lastCorrectionAt || 0) >= this.correctionIntervalMs;
-    const sendsCorrection = !transition && correctionDue;
+    const earlyCorrection = isActive && !transition && !correctionDue && await this.needsEarlyCorrection({ ...ctx, printer });
+    const sendsCorrection = !transition && (correctionDue || earlyCorrection);
     const lastCorrectionAt = transition || sendsCorrection ? this.now() : previous.lastCorrectionAt;
 
     // Recorded BEFORE the callbacks run, so a callback that throws can't leave the old state

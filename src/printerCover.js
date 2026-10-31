@@ -9,8 +9,13 @@ const { extractPlateImage, plateFromGcodeFile } = require('./printFile');
 // moments into a print still appears soon after.
 const FAILURE_BACKOFF_MS = 30 * 1000;
 const MAX_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
+// A 3MF the printer is still writing (a cloud job downloading while the printer prepares) is
+// tried again this soon instead, without growing the backoff: it is a matter of seconds.
+const NOT_READY_RETRY_MS = 10 * 1000;
 
 class CoverUnavailableError extends Error {}
+// The job's file is on the printer but can't be opened yet -- it is still being written.
+class CoverNotReadyError extends CoverUnavailableError {}
 
 // Parses PRINTER_ACCESS_CODES: comma-separated "<serial or printer name>:<access code>" pairs.
 // Keys go through normalizedID, so "Vic H2C", "vic-h2c" and a serial in any case all match.
@@ -86,29 +91,42 @@ class PrinterCoverService {
       throw new CoverUnavailableError(failed.reason);
     }
 
+    // The outcome is recorded once, by the lookup itself, not by each request waiting on it: two
+    // waiters each counting the same failure doubled the backoff, and the push-to-start that
+    // came 54 s later still got the stored failure instead of a fresh try.
     let lookup = this.inflight.get(jobKey);
     if (!lookup) {
-      lookup = this.lookUp(printer, currentStatus, viewKey).finally(() => this.inflight.delete(jobKey));
+      lookup = this.lookUp(printer, currentStatus, viewKey)
+        .then(
+          ({ png, source }) => this.recordImage(slot, { jobKey, jobName, printerId: printer.id, png, source }),
+          (error) => { throw this.recordFailure(slot, jobKey, printer, error); },
+        )
+        .finally(() => this.inflight.delete(jobKey));
       this.inflight.set(jobKey, lookup);
     }
+    return { ...await lookup, jobName };
+  }
 
-    try {
-      const { png, source } = await lookup;
-      const etag = `"${crypto.createHash('sha256').update(png).digest('hex').slice(0, 32)}"`;
-      const image = { jobKey, jobName, printerId: printer.id, png, source, etag };
-      this.images.set(slot, image);
-      this.failures.delete(slot);
-      return { ...image, jobName };
-    } catch (error) {
-      const latest = this.failures.get(slot);
-      const count = latest?.jobKey === jobKey ? latest.count + 1 : 1;
-      const backoff = Math.min(FAILURE_BACKOFF_MS * 2 ** (count - 1), MAX_FAILURE_BACKOFF_MS);
-      this.failures.set(slot, { jobKey, count, retryAt: this.now() + backoff, reason: error.message });
-      // Once per backoff window (requests inside one get the stored reason above). Only successes
-      // were logged, which left a 404 with no trace of which source failed or why.
-      console.log(`Cover for printer "${printer.name}" unavailable (retry in ${backoff / 1000}s): ${error.message}`);
-      throw error instanceof CoverUnavailableError ? error : new CoverUnavailableError(error.message);
-    }
+  recordImage(slot, image) {
+    const etag = `"${crypto.createHash('sha256').update(image.png).digest('hex').slice(0, 32)}"`;
+    const stored = { ...image, etag };
+    this.images.set(slot, stored);
+    this.failures.delete(slot);
+    return stored;
+  }
+
+  // Sets when the job is tried again and returns the error to throw. Once per backoff window
+  // (requests inside one get the stored reason). Only successes used to be logged, which left a
+  // 404 with no trace of which source failed or why.
+  recordFailure(slot, jobKey, printer, error) {
+    const latest = this.failures.get(slot);
+    const sameJob = latest?.jobKey === jobKey;
+    const notReady = error instanceof CoverNotReadyError;
+    const count = notReady ? (sameJob ? latest.count : 0) : (sameJob ? latest.count + 1 : 1);
+    const backoff = notReady ? NOT_READY_RETRY_MS : Math.min(FAILURE_BACKOFF_MS * 2 ** (count - 1), MAX_FAILURE_BACKOFF_MS);
+    this.failures.set(slot, { jobKey, count, retryAt: this.now() + backoff, reason: error.message });
+    console.log(`Cover for printer "${printer.name}" unavailable (retry in ${backoff / 1000}s): ${error.message}`);
+    return error instanceof CoverUnavailableError ? error : new CoverUnavailableError(error.message);
   }
 
   async lookUp(printer, status, viewKey) {
@@ -129,11 +147,19 @@ class PrinterCoverService {
     if (!file) throw new CoverUnavailableError(`${noCover}, and the printer has no file for that job`);
 
     const plate = status.current_plate_id ?? plateFromGcodeFile(status.gcode_file);
-    const png = await extractPlateImage(file.data, { plate, view });
+    let png;
+    try {
+      png = await extractPlateImage(file.data, { plate, view });
+    } catch (error) {
+      // A zip that won't open is, in practice, one still being written: a cloud job's 3MF read
+      // while the printer was still downloading it ("End of central directory record signature
+      // not found") opened fine four minutes later.
+      throw new CoverNotReadyError(`${file.path} on the printer can't be opened yet, probably still downloading (${error.message})`);
+    }
     if (!png) throw new CoverUnavailableError(`${file.path} on the printer carries no plate render`);
     console.log(`Cover for printer "${printer.name}" read from the printer (${file.path}): ${noCover}`);
     return { png, source: 'printer' };
   }
 }
 
-module.exports = { PrinterCoverService, CoverUnavailableError, parseAccessCodes };
+module.exports = { PrinterCoverService, CoverUnavailableError, CoverNotReadyError, parseAccessCodes };
