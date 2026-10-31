@@ -123,6 +123,26 @@ test('a found cover is served from memory for the rest of the job, and a new job
   assert.equal(bambuddy.calls.cover, 2);
 });
 
+test('a job that finishes keeps its cover when its gcode_file goes blank', async () => {
+  const status = { subtask_name: 'Piano Markers', gcode_file: '/data/Metadata/plate_1.gcode' };
+  let found = true;
+  const bambuddy = fakeBambuddy({ status, cover: async () => { if (!found) throw new Error('404'); return Buffer.from('png'); } });
+  const service = new PrinterCoverService({ bambuddyClient: bambuddy });
+  await service.cover(H2C);
+
+  // RUNNING -> FINISH: Bambuddy reports gcode_file "" and, just then, no /cover either.
+  status.gcode_file = '';
+  found = false;
+  assert.equal((await service.cover(H2C)).png.toString(), 'png');
+  assert.equal(bambuddy.calls.cover, 1);
+
+  // Another plate of the same job name is a different print.
+  status.gcode_file = '/data/Metadata/plate_2.gcode';
+  found = true;
+  await service.cover(H2C);
+  assert.equal(bambuddy.calls.cover, 2);
+});
+
 test('the top view is its own image', async () => {
   const views = [];
   const service = new PrinterCoverService({
