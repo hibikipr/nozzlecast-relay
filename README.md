@@ -158,7 +158,7 @@ microcontroller display. The Live Activity's `coverImage` comes from the same so
   | `width`, `height` | fit inside this box (1–2048), keeping the aspect ratio; never enlarged |
   | `format` | `png` (default), `jpeg` (baseline, for TJpgDec/JPEGDEC), `rgb565` (raw 16-bit little-endian pixels, no header) |
   | `quality` | JPEG quality 1–100, default 80 |
-  | `bg` | `RRGGBB` the transparent background is flattened onto for `jpeg`/`rgb565`, default `000000` |
+  | `bg` | `RRGGBB` the transparent background is flattened onto for `jpeg`/`rgb565`, default `000000`; or `auto` for NozzleCast's look in any format: trimmed to the model, on `1f2329` for a light model or `c4c9d1` for a dark one, and padded out to fill `width` × `height` when both are given |
   | `view` | `top` for the top-down plate view instead of the angled one |
 
 - **Response headers:** `X-Image-Width` / `X-Image-Height` (the size actually sent, needed for

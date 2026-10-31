@@ -72,4 +72,4 @@ async function downscaleCover(buffer, { maxDimension, maxBytes }) {
   return null;
 }
 
-module.exports = { downscaleCover, BACKDROP_DARK, BACKDROP_LIGHT };
+module.exports = { downscaleCover, modelIsLight, BACKDROP_DARK, BACKDROP_LIGHT };
