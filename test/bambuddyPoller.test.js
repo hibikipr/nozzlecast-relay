@@ -454,3 +454,27 @@ test('a disconnected idle printer never triggers onDisconnected', async () => {
   now = 10000; await poller.tick();
   assert.equal(disconnected.length, 0);
 });
+
+test('needsEarlyCorrection sends a correction before the interval, and only when asked', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'RUNNING', hms_errors: [] } } });
+  const cb = recordingCallbacks();
+  let coverReady = false;
+  const asked = [];
+  const poller = new BambuddyPoller({
+    bambuddyClient: client,
+    intervalMs: 1000,
+    correctionIntervalMs: 60 * 60 * 1000,
+    now: () => 0,
+    needsEarlyCorrection: async (ctx) => { asked.push(ctx); return coverReady; },
+    ...cb,
+  });
+
+  await poller.tick(); // baseline
+  await poller.tick();
+  assert.equal(cb.calls.correction.length, 0);
+  assert.equal(asked.at(-1).printer.name, 'Sam P1S');
+
+  coverReady = true;
+  await poller.tick();
+  assert.equal(cb.calls.correction.length, 1);
+});

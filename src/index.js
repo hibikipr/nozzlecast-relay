@@ -10,7 +10,7 @@ const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
 const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('./bambuddyEnrichment');
 const { downscaleCover } = require('./imageDownscale');
-const { resolveCoverImage } = require('./coverImageCache');
+const { resolveCoverImage, MAX_COVER_IMAGE_ATTEMPTS } = require('./coverImageCache');
 const { createServer } = require('./server');
 const { PrinterCoverService } = require('./printerCover');
 const { BambuddyPoller } = require('./bambuddyPoller');
@@ -535,6 +535,20 @@ async function main() {
             bambuddyPrinterId,
             priority: 5,
           }),
+        // A print whose push-to-start went out without its cover (a cloud job's 3MF still
+        // downloading, say) gets it pushed as soon as the cover service can read it, rather than
+        // with the next correction minutes later. Inside a failed lookup's backoff this costs
+        // nothing (the stored failure answers); the lookup it does run, the correction reuses.
+        needsEarlyCorrection: async ({ printerID, status, printer }) => {
+          const tracked = activityTokenStore.get(printerID);
+          if (!tracked || tracked.coverImage || (tracked.coverImageFailures ?? 0) >= MAX_COVER_IMAGE_ATTEMPTS) return false;
+          try {
+            await coverService.cover(printer, { status });
+            return true;
+          } catch {
+            return false;
+          }
+        },
         // An active printer Bambuddy has been unable to reach for the poller's disconnect window:
         // end the activity rather than leave it frozen on its last reading. If the printer comes
         // back still printing, the poller reports a fresh start and a new activity goes out.

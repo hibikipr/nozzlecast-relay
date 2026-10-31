@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const yazl = require('yazl');
-const { PrinterCoverService, CoverUnavailableError, parseAccessCodes } = require('../src/printerCover');
+const { PrinterCoverService, CoverUnavailableError, CoverNotReadyError, parseAccessCodes } = require('../src/printerCover');
 
 const H2C = { id: 2, name: 'Vic H2C', serial_number: '31B8AP610800367', ip_address: '192.168.3.244' };
 
@@ -202,4 +202,41 @@ test('a status the caller already has saves the status request', async () => {
   const service = new PrinterCoverService({ bambuddyClient: bambuddy });
   await service.cover(H2C, { status: { subtask_name: 'Given' } });
   assert.equal(bambuddy.calls.status, 0);
+});
+
+test('a failed lookup shared by several requests is counted once', async () => {
+  let clock = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const bambuddy = fakeBambuddy({ cover: async () => { await gate; return bambuddyHasNone(); } });
+  const service = new PrinterCoverService({ bambuddyClient: bambuddy, now: () => clock });
+  const requests = [service.cover(H2C), service.cover(H2C)];
+  release();
+  for (const request of requests) await assert.rejects(request);
+
+  // One failure: retried after 30 s, not 60.
+  clock = 30 * 1000;
+  await assert.rejects(service.cover(H2C));
+  assert.equal(bambuddy.calls.cover, 2);
+});
+
+test('a 3MF still being written is retried after 10 s without growing the backoff', async () => {
+  let clock = 0;
+  let file = Buffer.from('PK\u0003\u0004 half a zip');
+  const service = new PrinterCoverService({
+    bambuddyClient: fakeBambuddy({ cover: bambuddyHasNone, status: { subtask_name: 'Disney Nutcrackers_', gcode_file: 'Disney Nutcrackers_.3mf' } }),
+    accessCodes: parseAccessCodes('Vic H2C:c'),
+    downloadFile: async () => ({ path: '/cache/Disney Nutcrackers_.3mf', data: file }),
+    now: () => clock,
+  });
+  await assert.rejects(service.cover(H2C), (error) => error instanceof CoverNotReadyError && /still downloading/.test(error.message));
+
+  clock = 9 * 1000;
+  await assert.rejects(service.cover(H2C), (error) => /still downloading/.test(error.message));
+  clock = 10 * 1000;
+  await assert.rejects(service.cover(H2C), CoverNotReadyError);
+
+  file = await zipOf({ 'Metadata/plate_1.png': 'nutcrackers' });
+  clock = 20 * 1000;
+  assert.equal((await service.cover(H2C)).png.toString(), 'nutcrackers');
 });
