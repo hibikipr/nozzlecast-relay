@@ -124,9 +124,12 @@ class ArchiveCoverService {
 
   async archiveFor(printer, jobName, startedAt) {
     const earliest = startedAt ? Date.parse(startedAt) - START_SLACK_MS : this.now() - MISS_RETRY_MS;
+    // Bambuddy names an archive after the part of the job name past its last "/" ("CLICKER
+    // VERSION OREO / LOVE" is archived as " LOVE"), so either form is this print's.
+    const names = new Set([normalizedID(jobName), normalizedID(jobName.split('/').pop())]);
     const archives = await this.bambuddyClient.archives({ printerId: printer.id, limit: 5 });
     return archives
-      .filter((archive) => normalizedID(archive.print_name ?? '') === normalizedID(jobName))
+      .filter((archive) => names.has(normalizedID(archive.print_name ?? '')))
       .filter((archive) => (parseBambuddyTime(archive.started_at ?? archive.created_at) ?? 0) >= earliest)
       .sort((a, b) => b.id - a.id)[0] ?? null;
   }
