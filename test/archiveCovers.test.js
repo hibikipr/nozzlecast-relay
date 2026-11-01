@@ -166,3 +166,11 @@ test('the store keeps only the newest files past its cap', async () => {
   assert.ok(await store.get(2));
   assert.ok(await store.get(3));
 });
+
+test('a job name with a "/" matches the archive Bambuddy names after its last part', async () => {
+  const store = await freshStore();
+  const bambuddy = fakeBambuddy([{ id: 592, printer_id: 2, print_name: ' LOVE', started_at: '2026-10-23T10:00:00', thumbnail_path: null }]);
+  const service = new ArchiveCoverService({ store, bambuddyClient: bambuddy, coverService: fakeCoverService(await renderPng()) });
+  await service.capture({ printer: P1S, status: { subtask_name: 'CLICKER VERSION OREO / LOVE' }, startedAt: '2026-10-23T10:01:00.000Z' });
+  assert.ok(await store.get(592));
+});
