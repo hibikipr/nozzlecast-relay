@@ -478,3 +478,23 @@ test('needsEarlyCorrection sends a correction before the interval, and only when
   await poller.tick();
   assert.equal(cb.calls.correction.length, 1);
 });
+
+test('onObserved sees every active tick and the end of a print, with the printer', async () => {
+  const client = fakeClient({ printers: [{ id: 1, name: 'Sam P1S' }], statusByPrinterId: { 1: { state: 'IDLE', hms_errors: [] } } });
+  const observed = [];
+  const poller = new BambuddyPoller({
+    bambuddyClient: client, intervalMs: 1000, correctionIntervalMs: 60 * 60 * 1000,
+    onObserved: async (ctx) => observed.push([ctx.status.state, ctx.printer.name]),
+    ...recordingCallbacks(),
+  });
+
+  await poller.tick(); // baseline IDLE: not observed
+  client.status = async () => ({ state: 'RUNNING', hms_errors: [] });
+  await poller.tick();
+  await poller.tick();
+  client.status = async () => ({ state: 'FINISH', hms_errors: [] });
+  await poller.tick();
+  await poller.tick(); // still FINISH: not observed again
+
+  assert.deepEqual(observed, [['RUNNING', 'Sam P1S'], ['RUNNING', 'Sam P1S'], ['FINISH', 'Sam P1S']]);
+});

@@ -54,7 +54,7 @@ function loadConfig(env = process.env) {
     // per-activity tokens.
     liveActivityChannels: env.LIVE_ACTIVITY_CHANNELS === 'true',
     // Optional: "<serial or printer name>:<LAN access code>" pairs, comma-separated. With a
-    // printer's code the relay reads a cover Bambuddy can't find (a cloud print, a job name with
+    // printer's code the relay reads a cover Bambuddy can't find (an HTTPS-dispatched print, a job name with
     // a "/") straight off the printer over FTPS. Bambuddy never hands access codes to an API key,
     // so they can't come from there.
     printerAccessCodes: parseAccessCodes(env.PRINTER_ACCESS_CODES),

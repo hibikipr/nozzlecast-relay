@@ -328,3 +328,24 @@ test('GET /cover is 503 on a relay built without a cover service', async () => {
   const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
   assert.equal((await request(app).get('/cover/vic-h2c?key=secret123')).status, 503);
 });
+
+// GET /cover/archive/:archiveId -- an archived print's cover, for print history.
+test('GET /cover/archive/:archiveId serves the saved JPEG behind the cover key, 404 when there is none', async () => {
+  const jpeg = Buffer.from('jpeg bytes');
+  const archiveCoverService = { cover: async (id) => (id === 622 ? jpeg : null) };
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', archiveCoverService, coverApiKey: 'coverkey' });
+
+  assert.equal((await request(app).get('/cover/archive/622')).status, 401);
+  const res = await request(app).get('/cover/archive/622?key=coverkey');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'image/jpeg');
+  assert.deepEqual(res.body, jpeg);
+  assert.equal((await request(app).get('/cover/archive/622').set('If-None-Match', res.headers.etag).set('Authorization', 'Bearer secret123')).status, 304);
+  assert.equal((await request(app).get('/cover/archive/600?key=coverkey')).status, 404);
+  assert.equal((await request(app).get('/cover/archive/abc?key=coverkey')).status, 400);
+});
+
+test('GET /cover/archive/:archiveId is a 503 when covers are not set up', async () => {
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
+  assert.equal((await request(app).get('/cover/archive/1').set('Authorization', 'Bearer secret123')).status, 503);
+});

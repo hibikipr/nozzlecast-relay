@@ -31,7 +31,7 @@ test('logs in as bblp over implicit FTPS on 990 and downloads the job file from 
     files: { '/cache/OREO 2f LOVE.gcode.3mf': Buffer.from('3mf!') },
   });
   const file = await downloadPrintFile({ host: '192.168.3.244', accessCode: 'code', subtaskName: 'OREO / LOVE', createClient: () => client });
-  assert.deepEqual(file, { path: '/cache/OREO 2f LOVE.gcode.3mf', data: Buffer.from('3mf!') });
+  assert.deepEqual(file, { path: '/cache/OREO 2f LOVE.gcode.3mf', data: Buffer.from('3mf!'), modifiedAt: null });
   const [, options] = client.log[0];
   assert.equal(options.port, 990);
   assert.equal(options.user, 'bblp');

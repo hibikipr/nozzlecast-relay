@@ -55,9 +55,25 @@ function handleAsync(route, handler) {
   };
 }
 
-function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret, coverService = null, coverApiKey = null }) {
+function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret, coverService = null, archiveCoverService = null, coverApiKey = null }) {
   const app = express();
   app.use(express.json());
+
+  // An archived print's cover, by Bambuddy archive id, for print history: a square JPEG of the
+  // model on its contrast backdrop (see archiveCovers.js). 404 when there is none -- Bambuddy's own
+  // thumbnail, where it has one, is the client's to fetch.
+  app.get('/cover/archive/:archiveId', requireAnyKey([authSecret, coverApiKey].filter(Boolean)), handleAsync('/cover/archive', async (req, res) => {
+    if (!archiveCoverService) return res.status(503).json({ error: 'cover images are not set up on this relay' });
+    const archiveId = Number(req.params.archiveId);
+    if (!Number.isInteger(archiveId) || archiveId <= 0) return res.status(400).json({ error: 'archiveId must be a positive whole number' });
+
+    const jpeg = await archiveCoverService.cover(archiveId);
+    if (!jpeg) return res.status(404).json({ error: 'no cover for this archive' });
+    const etag = `"${crypto.createHash('sha256').update(jpeg).digest('hex').slice(0, 32)}"`;
+    res.set({ ETag: etag, 'Cache-Control': 'private, max-age=86400' });
+    if (req.get('if-none-match') === etag) return res.status(304).end();
+    res.type('image/jpeg').send(jpeg);
+  }));
 
   // The cover image (sliced plate render) of a printer's current or last job, for any client --
   // NozzleCast, a dashboard, a microcontroller display. printerID is the printer's name in any
