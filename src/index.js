@@ -12,7 +12,8 @@ const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = 
 const { downscaleCover } = require('./imageDownscale');
 const { resolveCoverImage, MAX_COVER_IMAGE_ATTEMPTS } = require('./coverImageCache');
 const { createServer } = require('./server');
-const { PrinterCoverService } = require('./printerCover');
+const { PrinterCoverService, CoverUnavailableError } = require('./printerCover');
+const { ArchiveCoverStore, ArchiveCoverService } = require('./archiveCovers');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 const { WakeRetryPolicy } = require('./wakeRetryPolicy');
@@ -62,6 +63,12 @@ async function main() {
   const bambuddyClient = new BambuddyClient({ baseUrl: config.bambuddyUrl, apiKey: config.bambuddyApiKey });
   const printerIdCache = new PrinterIdCache({ bambuddyClient });
   const coverService = new PrinterCoverService({ bambuddyClient, accessCodes: config.printerAccessCodes });
+  // Each print's cover kept by Bambuddy archive id, for print history (see archiveCovers.js).
+  const archiveCoverService = new ArchiveCoverService({
+    store: new ArchiveCoverStore(path.join(config.dataDir, 'archive-covers')),
+    bambuddyClient,
+    coverService,
+  });
 
   // Exact caps from CoverImageProcessing in NozzleCastShared -- see imageDownscale.js for why
   // matching these precisely (not approximating) matters: ActivityKit ends the whole Live
@@ -535,10 +542,19 @@ async function main() {
             bambuddyPrinterId,
             priority: 5,
           }),
-        // A print whose push-to-start went out without its cover (a cloud job's 3MF still
+        // A print whose push-to-start went out without its cover (an HTTPS-dispatched job's 3MF still
         // downloading, say) gets it pushed as soon as the cover service can read it, rather than
         // with the next correction minutes later. Inside a failed lookup's backoff this costs
         // nothing (the stored failure answers); the lookup it does run, the correction reuses.
+        // Saves a print's cover under its Bambuddy archive as it runs, in the background: keeping a
+        // picture for print history never holds up a push. A cover that isn't available yet is
+        // tried again on a later tick.
+        onObserved: async ({ printerID, status, printer }) => {
+          archiveCoverService.capture({ printer, status, startedAt: activityTokenStore.get(printerID)?.startedAt ?? null })
+            .catch((error) => {
+              if (!(error instanceof CoverUnavailableError)) console.error(`Saving the cover of printer "${printer.name}"'s print failed:`, error);
+            });
+        },
         needsEarlyCorrection: async ({ printerID, status, printer }) => {
           const tracked = activityTokenStore.get(printerID);
           if (!tracked || tracked.coverImage || (tracked.coverImageFailures ?? 0) >= MAX_COVER_IMAGE_ATTEMPTS) return false;
@@ -591,7 +607,7 @@ async function main() {
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 
   const app = createServer({
-    tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret, coverService, coverApiKey: config.coverApiKey,
+    tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret, coverService, archiveCoverService, coverApiKey: config.coverApiKey,
   });
   if (config.printerAccessCodes.size > 0) {
     console.log(`Covers Bambuddy can't find are read from the printer for ${config.printerAccessCodes.size} configured access code(s)`);

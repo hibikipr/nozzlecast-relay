@@ -89,6 +89,18 @@ class BambuddyClient {
     return this._getBinary(`/api/v1/printers/${printerId}/cover${query}`, { authenticated: true });
   }
 
+  // GET /api/v1/archives/?printer_id=&limit= -> a printer's archived prints, newest first:
+  // [{ id, printer_id, print_name, filename, plate_id, status, started_at, completed_at,
+  // created_at, thumbnail_path, ... }]. Bambuddy creates the archive as a print starts.
+  async archives({ printerId, limit = 10 }) {
+    return this._get(`/api/v1/archives/?printer_id=${encodeURIComponent(printerId)}&limit=${limit}`);
+  }
+
+  // GET /api/v1/archives/{id} -> one archived print, same shape as archives() lists.
+  async archive(archiveId) {
+    return this._get(`/api/v1/archives/${encodeURIComponent(archiveId)}`);
+  }
+
   // GET /api/v1/printers/{id}/camera/snapshot?token=... -> a live camera frame (JPEG).
   async cameraSnapshot(printerId, streamToken) {
     return this._getBinary(`/api/v1/printers/${printerId}/camera/snapshot?token=${encodeURIComponent(streamToken)}`);

@@ -46,6 +46,9 @@ class BambuddyPoller {
     // onCorrection now rather than at the next interval (the Live Activity's cover turning up
     // after its push-to-start went out without it).
     needsEarlyCorrection = async () => false,
+    // Every tick an active printer is seen, and once more as its print ends, after any other
+    // callback. Must not throw.
+    onObserved = async () => {},
     disconnectEndMs = DEFAULT_DISCONNECT_END_MS,
     now = () => Date.now(),
     hmsIssueDebouncer = new HmsIssueDebouncer(),
@@ -62,6 +65,7 @@ class BambuddyPoller {
     this.onBaselineInactive = onBaselineInactive;
     this.onDisconnected = onDisconnected;
     this.needsEarlyCorrection = needsEarlyCorrection;
+    this.onObserved = onObserved;
     this.disconnectEndMs = disconnectEndMs;
     this.now = now;
     this.hmsIssueDebouncer = hmsIssueDebouncer;
@@ -196,7 +200,7 @@ class BambuddyPoller {
     const confirmedIssues = isActive ? this.hmsIssueDebouncer.observe(printerID, hmsEntries) : [];
     const badge = badgeFromEntries(confirmedIssues);
     const ctx = {
-      printerID, name: printer.name, bambuddyPrinterId: printer.id, status, priorIssueSeverity, priorProgress, ...badge,
+      printerID, name: printer.name, bambuddyPrinterId: printer.id, printer, status, priorIssueSeverity, priorProgress, ...badge,
     };
 
     // Any transition push already carries a full, fresh content-state, so it doubles as this
@@ -204,7 +208,7 @@ class BambuddyPoller {
     // on the very same tick -- two back-to-back pushes spending the device's private Live
     // Activity update budget on identical content.
     const correctionDue = isActive && this.now() - (previous.lastCorrectionAt || 0) >= this.correctionIntervalMs;
-    const earlyCorrection = isActive && !transition && !correctionDue && await this.needsEarlyCorrection({ ...ctx, printer });
+    const earlyCorrection = isActive && !transition && !correctionDue && await this.needsEarlyCorrection(ctx);
     const sendsCorrection = !transition && (correctionDue || earlyCorrection);
     const lastCorrectionAt = transition || sendsCorrection ? this.now() : previous.lastCorrectionAt;
 
@@ -220,6 +224,8 @@ class BambuddyPoller {
     // a FAILED does -- onFailed already picks "Failed" vs "Stopped" from the prior HMS state.
     else if (transition === 'failed' || transition === 'stopped') await this.onFailed(ctx);
     else if (sendsCorrection) await this.onCorrection(ctx);
+
+    if (isActive || ['finish', 'failed', 'stopped'].includes(transition)) await this.onObserved(ctx);
   }
 
   async _observeDisconnected(printer, printerID, status) {

@@ -1,17 +1,20 @@
 const yauzl = require('yauzl');
 
-// Where a Bambu printer keeps the file it is printing, most likely first. A cloud print (Bambu
-// Handy, MakerWorld, a slicer's cloud send) and an H2-series Studio upload land in /cache; an SD
-// card print sits at the root. Same order Bambuddy's own cover route searches.
+// Where a Bambu printer keeps the file it is printing, most likely first. An HTTPS-dispatched
+// print (the printer downloads the job from an https:// link itself) and an H2-series Studio
+// upload land in /cache; an SD card print sits at the root. Same order Bambuddy's own cover route
+// searches.
 const PRINT_FILE_DIRS = ['/cache', '/', '/model', '/data'];
 
-// The file names the printer may have stored a job under, most likely first. The printer can't
-// put a "/" in a file name and stores it as "2f": a job named "OREO / LOVE" is
-// "OREO 2f LOVE.gcode.3mf". Bambu Studio sometimes swaps spaces for underscores.
+// The file names the printer may have stored a job under, most likely first. Printers escape
+// characters a file name can't hold differently: an H2C stores "/" as "2f" and "*" as "2a"
+// ("OREO / LOVE" is "OREO 2f LOVE.gcode.3mf"), a P1S stores "/" as "_" ("… _ Phoneholder.3mf").
+// Bambu Studio sometimes swaps spaces for underscores.
 function candidateFileNames(subtaskName) {
-  const stored = subtaskName.replace(/\//g, '2f');
+  const hexEscaped = subtaskName.replace(/\//g, '2f').replace(/\*/g, '2a');
+  const underscored = subtaskName.replace(/\//g, '_');
   const names = [];
-  for (const base of new Set([stored, stored.replace(/ /g, '_')])) {
+  for (const base of new Set([hexEscaped, hexEscaped.replace(/ /g, '_'), underscored])) {
     if (base.toLowerCase().endsWith('.3mf')) names.push(base);
     else names.push(`${base}.gcode.3mf`, `${base}.3mf`);
   }
@@ -20,12 +23,13 @@ function candidateFileNames(subtaskName) {
 
 // The first candidate found in any directory, searching every directory for the most likely name
 // before trying the next name. `listings` maps a directory to its listing ([{ name, size }]); a
-// directory that couldn't be listed is simply absent. Returns { path, size } or null.
+// directory that couldn't be listed is simply absent. Returns { path, size, modifiedAt } or null;
+// modifiedAt (a Date, when the listing gave one) is when the printer wrote the file.
 function findPrintFile(listings, subtaskName) {
   for (const name of candidateFileNames(subtaskName)) {
     for (const dir of PRINT_FILE_DIRS) {
       const entry = listings[dir]?.find((file) => file.name === name);
-      if (entry) return { path: `${dir === '/' ? '' : dir}/${name}`, size: entry.size };
+      if (entry) return { path: `${dir === '/' ? '' : dir}/${name}`, size: entry.size, modifiedAt: entry.modifiedAt ?? null };
     }
   }
   return null;

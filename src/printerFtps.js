@@ -8,17 +8,18 @@ const DEFAULT_MAX_BYTES = 200 * 1024 * 1024;
 
 // Downloads the 3MF a printer is printing straight from the printer, over the implicit FTPS it
 // serves on port 990 (user "bblp", the LAN access code). This is the path for the prints Bambuddy
-// can't find a cover for: it reads a cloud print's S3 download link as "internal storage" and
-// never looks, and it searches for a name with a "/" under the raw name (maziggy/bambuddy#3382,
-// closed as out of scope). The file is on the printer all the same.
+// can't find a cover for: it reads an HTTPS-dispatched print's https:// download link as
+// "internal storage" and never looks, and it searches for a name with a "/" under the raw name
+// (maziggy/bambuddy#3382). The printer downloads that file into /cache itself all the same.
 //
 // The printer's certificate is self-signed, so it isn't verified -- the access code is the only
 // credential, same as for Bambuddy and the slicer. basic-ftp reuses the control connection's TLS
 // session for each data connection, which the printers' vsFTPd requires. A1-series firmware that
 // only takes a clear data channel is not handled.
 //
-// Returns { path, data } or null when the printer has no file for that job. Throws on connection
-// or transfer failure.
+// Returns { path, data, modifiedAt } or null when the printer has no file for that job;
+// modifiedAt is when the printer wrote it (a Date, or null if the listing didn't say). Throws on
+// connection or transfer failure.
 async function downloadPrintFile({
   host, accessCode, subtaskName,
   timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, createClient = (timeout) => new ftp.Client(timeout),
@@ -59,7 +60,7 @@ async function downloadPrintFile({
       },
     });
     await client.downloadTo(sink, file.path);
-    return { path: file.path, data: Buffer.concat(chunks) };
+    return { path: file.path, data: Buffer.concat(chunks), modifiedAt: file.modifiedAt };
   } finally {
     client.close();
   }

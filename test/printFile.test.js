@@ -22,23 +22,29 @@ test('a job name gets both 3MF spellings, sliced first', () => {
 test('a "/" in a job name is looked for as "2f", the way the printer stores it', () => {
   assert.deepEqual(candidateFileNames('OREO / LOVE'), [
     'OREO 2f LOVE.gcode.3mf', 'OREO 2f LOVE.3mf', 'OREO_2f_LOVE.gcode.3mf', 'OREO_2f_LOVE.3mf',
+    'OREO _ LOVE.gcode.3mf', 'OREO _ LOVE.3mf',
   ]);
+});
+
+test('a "*" is looked for as "2a", and a P1S\'s "/" as "_"', () => {
+  assert.ok(candidateFileNames('*For Larger Faces*').includes('2aFor Larger Faces2a.gcode.3mf'));
+  assert.ok(candidateFileNames('Hello Kitty Handyhalterung / Phoneholder').includes('Hello Kitty Handyhalterung _ Phoneholder.3mf'));
 });
 
 test('a job name that is already a .3mf file name is kept as is', () => {
   assert.deepEqual(candidateFileNames('plate.3mf'), ['plate.3mf']);
 });
 
-test('a cloud print is found in /cache', () => {
+test('an HTTPS-dispatched print is found in /cache', () => {
   const listings = {
     '/cache': [{ name: '4 Colours - Chococat.gcode.3mf', size: 1234 }],
     '/': [{ name: 'other.gcode.3mf', size: 1 }],
   };
-  assert.deepEqual(findPrintFile(listings, '4 Colours - Chococat'), { path: '/cache/4 Colours - Chococat.gcode.3mf', size: 1234 });
+  assert.deepEqual(findPrintFile(listings, '4 Colours - Chococat'), { path: '/cache/4 Colours - Chococat.gcode.3mf', size: 1234, modifiedAt: null });
 });
 
 test('a root file gets a single leading slash', () => {
-  assert.deepEqual(findPrintFile({ '/': [{ name: 'Benchy.3mf', size: 9 }] }, 'Benchy'), { path: '/Benchy.3mf', size: 9 });
+  assert.deepEqual(findPrintFile({ '/': [{ name: 'Benchy.3mf', size: 9 }] }, 'Benchy'), { path: '/Benchy.3mf', size: 9, modifiedAt: null });
 });
 
 test('the most likely name wins over a directory searched earlier', () => {

@@ -34,7 +34,7 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 | `BAMBUDDY_POLL_INTERVAL_MS` | Optional, defaults to `15000` — how often Bambuddy is polled for `gcode_state` transitions |
 | `LIVE_ACTIVITY_CORRECTION_INTERVAL_MS` | Optional, defaults to `600000` (10 min) — how often an active print with no other event gets a correction update to keep `estimatedEndAt` accurate |
 | `LIVE_ACTIVITY_CHANNELS` | Optional, defaults to off. `true` puts each print's Live Activities on an APNs broadcast channel (iOS 18+), so updates reach a device even when its app never ran to register a per-activity token (Low Power Mode, force-quit). Requires Broadcast enabled under Push Notifications for the App ID in the Apple Developer portal; without it each print falls back to per-activity tokens |
-| `PRINTER_ACCESS_CODES` | Optional. Comma-separated `<serial or printer name>:<LAN access code>` pairs, e.g. `31B8AP610800367:12345678,Sam P1S:87654321`. With a printer's code, a cover Bambuddy can't find (a cloud print, a job name with a `/`) is read straight off the printer over FTPS. See [Cover image API](#cover-image-api) |
+| `PRINTER_ACCESS_CODES` | Optional. Comma-separated `<serial or printer name>:<LAN access code>` pairs, e.g. `31B8AP610800367:12345678,Sam P1S:87654321`. With a printer's code, a cover Bambuddy can't find (an HTTPS-dispatched print, a job name with a `/`) is read straight off the printer over FTPS, and each print's cover is kept for print history in `DATA_DIR/archive-covers`. See [Cover image API](#cover-image-api) |
 | `COVER_API_KEY` | Optional. A second key that `GET /cover` accepts besides `RELAY_AUTH_SECRET`, for a dashboard or display that shouldn't hold the secret that also registers push tokens |
 | `DATA_DIR` | Optional, defaults to `/data` |
 | `PORT` | Optional, defaults to `3000` |
@@ -147,9 +147,9 @@ microcontroller display. The Live Activity's `coverImage` comes from the same so
 - **Where the image comes from:** Bambuddy's own `/cover` first. When Bambuddy has none and the
   printer has an entry in `PRINTER_ACCESS_CODES`, the relay reads the job's 3MF straight off the
   printer over FTPS (port 990) and takes the plate's render from it. That covers prints Bambuddy
-  doesn't look for: cloud prints (Bambu Handy, MakerWorld), whose download link Bambuddy reads as
-  internal storage, and job names with a `/`, which the printer stores as `2f`
-  (maziggy/bambuddy#3382, closed as out of scope). The container must reach the printer on TCP 990.
+  doesn't look for: HTTPS-dispatched prints, whose https:// download link Bambuddy reads as
+  internal storage though the printer saves the file to its `/cache`, and job names with a `/`,
+  which the printer stores as `2f` (H2 series) or `_` (P1S) (maziggy/bambuddy#3382). The container must reach the printer on TCP 990.
   A1-series printers, whose FTPS takes only a clear data channel, aren't supported on that path.
 - **Query options:**
 
@@ -173,6 +173,22 @@ microcontroller display. The Live Activity's `coverImage` comes from the same so
 curl -H "Authorization: Bearer $COVER_API_KEY" -o cover.jpg \
   "https://relay.example.com/cover/vic-h2c?width=240&height=240&format=jpeg"
 ```
+
+### Archived prints: `GET /cover/archive/:archiveId`
+
+A past print's cover by its Bambuddy archive id, for print history: a 256×256 JPEG of the model on
+its contrast backdrop. For the prints Bambuddy archived without a thumbnail (it has none without the
+job's 3MF). Same auth as `GET /cover`; `ETag`/`If-None-Match` as above.
+
+- **Saved as the print runs:** while a printer prints, the relay saves its cover under the archive
+  Bambuddy made for that print, in `DATA_DIR/archive-covers/<archiveId>.jpg` (tens of KB each, the
+  oldest removed past 3000).
+- **Older prints:** for an archive from before that, the relay reads the job's file off the
+  printer once (with its `PRINTER_ACCESS_CODES` entry), but only for the newest archive with that
+  job name on that printer: a reprint under the same name overwrites the printer's file, so for an
+  older one it could be a different model. Those stay without a cover.
+- **Errors:** `404` when there's no cover (looked for again after a day), `400` for an id that isn't
+  a positive whole number, `503` when covers aren't set up.
 
 ## Contributing
 

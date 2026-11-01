@@ -9,7 +9,7 @@ const { extractPlateImage, plateFromGcodeFile } = require('./printFile');
 // moments into a print still appears soon after.
 const FAILURE_BACKOFF_MS = 30 * 1000;
 const MAX_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
-// A 3MF the printer is still writing (a cloud job downloading while the printer prepares) is
+// A 3MF the printer is still writing (an HTTPS-dispatched job the printer is still downloading as it prepares) is
 // tried again this soon instead, without growing the backoff: it is a matter of seconds.
 const NOT_READY_RETRY_MS = 10 * 1000;
 
@@ -34,7 +34,7 @@ function parseAccessCodes(value) {
 // The cover image (the sliced plate's PNG render) of a printer's current or last job. Bambuddy's
 // own /cover is asked first -- it caches, and it is the only source when no access code is
 // configured. When it has none, the 3MF is read straight off the printer over FTPS. That second
-// path is what covers cloud prints and job names with a "/", which Bambuddy doesn't look for (see
+// path is what covers HTTPS-dispatched prints and job names with a "/", which Bambuddy doesn't look for (see
 // printerFtps.js).
 //
 // One image is kept per printer and view, keyed by the job: a new job's first request replaces
@@ -151,7 +151,7 @@ class PrinterCoverService {
     try {
       png = await extractPlateImage(file.data, { plate, view });
     } catch (error) {
-      // A zip that won't open is, in practice, one still being written: a cloud job's 3MF read
+      // A zip that won't open is, in practice, one still being written: an HTTPS-dispatched job's 3MF read
       // while the printer was still downloading it ("End of central directory record signature
       // not found") opened fine four minutes later.
       throw new CoverNotReadyError(`${file.path} on the printer can't be opened yet, probably still downloading (${error.message})`);
