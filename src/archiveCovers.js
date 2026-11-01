@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { normalizedID } = require('./parsing');
 const { renderCover } = require('./coverRender');
-const { extractPlateImage, plateFromGcodeFile } = require('./printFile');
+const { extractPlateImage, plateFromGcodeFile, platePrediction } = require('./printFile');
 const { downloadPrintFile } = require('./printerFtps');
 
 // Each archived print's cover, kept by Bambuddy archive id, for the prints Bambuddy archived
@@ -27,6 +27,9 @@ const START_SLACK_MS = 15 * 60 * 1000;
 // How many of a printer's archives are checked when backfilling, to find whether a newer print
 // reused the job name (and so overwrote its file on the printer).
 const BACKFILL_ARCHIVE_WINDOW = 500;
+// A finished print whose actual run time is this close to the file's predicted time for its plate
+// is taken to be the same model (an observed reprint ran 2-5% over the prediction).
+const RUN_TIME_TOLERANCE = 0.1;
 
 // Bambuddy's timestamps are UTC without an offset ("2026-10-31T21:11:01"); Date.parse would read
 // those as local time.
@@ -135,9 +138,15 @@ class ArchiveCoverService {
   }
 
   // The saved cover of an archive (JPEG), or, for one archived before covers were saved, its job
-  // file read off the printer -- or null. A backfill only trusts the printer's file for the newest
-  // of that printer's archives with the job's name: a reprint under the same name overwrites the
-  // file, so for an older archive it may be a different model.
+  // file read off the printer -- or null. A reprint under the same name overwrites the printer's
+  // file, so for an archive a newer print reused the name of, the file may be a different model.
+  // It's still trusted in two cases, both from a multi-plate project printed plate by plate:
+  //  - a plate no newer same-name print used: the file has every plate's render, so this plate's
+  //    is the one it printed (unless the project was edited between sends);
+  //  - the same plate as a newer print, when this print finished and ran within 10% of the file's
+  //    predicted time for that plate.
+  // Anything else (a failed reprint of the same plate, a generic name reused for another model)
+  // stays without a cover rather than show the wrong one.
   async cover(archiveId) {
     const saved = await this.store.get(archiveId);
     if (saved) return saved;
@@ -163,9 +172,16 @@ class ArchiveCoverService {
     const jobName = archive.print_name;
     if (!jobName || archive.printer_id == null) throw new Error('the archive names no job or printer');
 
+    const plate = archive.plate_id ?? plateFromGcodeFile(archive.filename);
     const newer = (await this.bambuddyClient.archives({ printerId: archive.printer_id, limit: BACKFILL_ARCHIVE_WINDOW }))
-      .some((other) => other.id > archive.id && normalizedID(other.print_name ?? '') === normalizedID(jobName));
-    if (newer) throw new Error(`a newer print reused the name "${jobName}", so the printer's file may be another model`);
+      .filter((other) => other.id > archive.id && normalizedID(other.print_name ?? '') === normalizedID(jobName));
+    const nameReused = newer.length > 0;
+    if (nameReused && plate === null) throw new Error(`a newer print reused the name "${jobName}" and this one names no plate`);
+    const plateReused = newer.some((other) => (other.plate_id ?? plateFromGcodeFile(other.filename)) === plate);
+    const ranFor = (parseBambuddyTime(archive.completed_at) ?? 0) - (parseBambuddyTime(archive.started_at) ?? 0);
+    if (plateReused && (archive.status !== 'completed' || ranFor <= 0)) {
+      throw new Error(`a newer print of "${jobName}" reused plate ${plate}, and this one didn't finish to compare its run time`);
+    }
 
     const printer = (await this.bambuddyClient.printers()).find((candidate) => candidate.id === archive.printer_id);
     if (!printer) throw new Error(`Bambuddy no longer lists printer ${archive.printer_id}`);
@@ -181,7 +197,14 @@ class ArchiveCoverService {
       throw new Error(`${file.path} predates the print`);
     }
 
-    const plate = archive.plate_id ?? plateFromGcodeFile(archive.filename);
+    if (plateReused) {
+      const predicted = await platePrediction(file.data, plate);
+      if (!predicted) throw new Error(`${file.path} has no predicted time for plate ${plate} to compare a reprint's run time with`);
+      const off = Math.abs(ranFor / 1000 - predicted) / predicted;
+      if (off > RUN_TIME_TOLERANCE) {
+        throw new Error(`it ran ${Math.round(ranFor / 1000)} s, ${Math.round(off * 100)}% off the ${predicted} s predicted for plate ${plate}, so the printer's file may be another model`);
+      }
+    }
     const png = await extractPlateImage(file.data, { plate });
     if (!png) throw new Error(`${file.path} carries no plate render`);
     const saved = await this.store.save(archiveId, png);

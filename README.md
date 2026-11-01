@@ -184,9 +184,12 @@ job's 3MF). Same auth as `GET /cover`; `ETag`/`If-None-Match` as above.
   Bambuddy made for that print, in `DATA_DIR/archive-covers/<archiveId>.jpg` (tens of KB each, the
   oldest removed past 3000).
 - **Older prints:** for an archive from before that, the relay reads the job's file off the
-  printer once (with its `PRINTER_ACCESS_CODES` entry), but only for the newest archive with that
-  job name on that printer: a reprint under the same name overwrites the printer's file, so for an
-  older one it could be a different model. Those stay without a cover.
+  printer once (with its `PRINTER_ACCESS_CODES` entry). A reprint under the same name overwrites
+  the printer's file, so for an archive a newer print reused the name of, the file is only trusted
+  when it's the same project printed plate by plate: a plate no newer same-name print used (the
+  file has every plate's render), or the same plate when that print finished within 10% of the
+  file's predicted time for it. Anything else, like a failed reprint or a generic name used for
+  another model, stays without a cover.
 - **Errors:** `404` when there's no cover (looked for again after a day), `400` for an id that isn't
   a positive whole number, `503` when covers aren't set up.
 
