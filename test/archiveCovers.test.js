@@ -174,3 +174,60 @@ test('a job name with a "/" matches the archive Bambuddy names after its last pa
   await service.capture({ printer: P1S, status: { subtask_name: 'CLICKER VERSION OREO / LOVE' }, startedAt: '2026-10-23T10:01:00.000Z' });
   assert.ok(await store.get(592));
 });
+
+// A 9-plate project printed plate by plate, all under one job name: the newest file holds every
+// plate's render, and a prediction only for the plate it was sliced for.
+async function flatBaseFile() {
+  return zipOf({
+    'Metadata/plate_4.png': await renderPng({ r: 0, g: 200, b: 0 }),
+    'Metadata/plate_9.png': await renderPng({ r: 0, g: 0, b: 200 }),
+    'Metadata/slice_info.config': '<config><plate><metadata key="index" value="9"/><metadata key="prediction" value="8346"/><metadata key="weight" value="57.57"/></plate></config>',
+  });
+}
+
+function flatBaseService(store, archives) {
+  return new ArchiveCoverService({
+    store,
+    bambuddyClient: fakeBambuddy(archives),
+    coverService: fakeCoverService(null),
+    downloadFile: async () => ({ path: '/cache/Flat base to prevent rolling.gcode.3mf', data: await flatBaseFile(), modifiedAt: new Date(Date.UTC(2026, 9, 30, 23, 39)) }),
+  });
+}
+
+const FLAT_BASE = 'Flat base to prevent rolling';
+const newestFlatBase = { id: 617, printer_id: 2, print_name: FLAT_BASE, filename: '/data/Metadata/plate_9.gcode', status: 'completed', started_at: '2026-10-30T23:39:33', completed_at: '2026-10-31T02:05:57' };
+
+test('an older reprint of another plate gets that plate from the newest file', async () => {
+  const store = await freshStore();
+  const service = flatBaseService(store, [
+    { id: 599, printer_id: 2, print_name: FLAT_BASE, filename: '/data/Metadata/plate_4.gcode', status: 'completed', started_at: '2026-10-28T10:00:00', completed_at: '2026-10-28T10:47:00' },
+    newestFlatBase,
+  ]);
+  const cover = await service.cover(599);
+  assert.ok(cover);
+  // Plate 4's render is green, plate 9's blue: the saved cover is plate 4's.
+  const { data } = await sharp(cover).extract({ left: 128, top: 128, width: 1, height: 1 }).raw().toBuffer({ resolveWithObject: true });
+  assert.ok(data[1] > data[2], 'plate 4 (green), not plate 9 (blue)');
+});
+
+test("a finished reprint of the same plate is taken when it ran close to the plate's predicted time", async () => {
+  const store = await freshStore();
+  const service = flatBaseService(store, [
+    // 8489 s against 8346 predicted: 1.7% over.
+    { id: 616, printer_id: 2, print_name: FLAT_BASE, filename: '/data/Metadata/plate_9.gcode', status: 'completed', started_at: '2026-10-30T20:00:00', completed_at: '2026-10-30T22:21:29' },
+    newestFlatBase,
+  ]);
+  assert.ok(await service.cover(616));
+});
+
+test('a reprint of the same plate that ran far off the prediction, or failed, keeps no cover', async () => {
+  const store = await freshStore();
+  const service = flatBaseService(store, [
+    // 10000 s: 20% over the prediction.
+    { id: 610, printer_id: 2, print_name: FLAT_BASE, filename: '/data/Metadata/plate_9.gcode', status: 'completed', started_at: '2026-10-29T10:00:00', completed_at: '2026-10-29T12:46:40' },
+    { id: 612, printer_id: 2, print_name: FLAT_BASE, filename: '/data/Metadata/plate_9.gcode', status: 'failed', started_at: '2026-10-29T13:00:00', completed_at: '2026-10-29T13:01:10' },
+    newestFlatBase,
+  ]);
+  assert.equal(await service.cover(610), null);
+  assert.equal(await service.cover(612), null);
+});

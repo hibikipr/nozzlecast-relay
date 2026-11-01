@@ -91,4 +91,25 @@ async function extractPlateImage(buffer, { plate = null, view = null } = {}) {
   }
 }
 
-module.exports = { PRINT_FILE_DIRS, candidateFileNames, findPrintFile, plateFromGcodeFile, extractPlateImage };
+// The slicer's predicted print time for one plate, in seconds, from Metadata/slice_info.config --
+// or null. Only plates that were sliced into this file have one (a per-plate export has just its
+// own): <plate><metadata key="index" value="9"/><metadata key="prediction" value="8346"/>...
+async function platePrediction(buffer, plate) {
+  const { zip, entries } = await readZipEntries(buffer);
+  try {
+    const entry = entries.get('Metadata/slice_info.config');
+    if (!entry) return null;
+    const xml = (await readEntry(zip, entry)).toString('utf8');
+    for (const [, block] of xml.matchAll(/<plate>([\s\S]*?)<\/plate>/g)) {
+      const value = (key) => new RegExp(`<metadata\\s+key="${key}"\\s+value="([^"]*)"`).exec(block)?.[1];
+      if (Number(value('index')) !== plate) continue;
+      const seconds = Number(value('prediction'));
+      return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+    }
+    return null;
+  } finally {
+    zip.close();
+  }
+}
+
+module.exports = { PRINT_FILE_DIRS, candidateFileNames, findPrintFile, plateFromGcodeFile, extractPlateImage, platePrediction };

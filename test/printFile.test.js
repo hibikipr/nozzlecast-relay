@@ -85,3 +85,16 @@ test('a 3MF without the render is null, and a broken one throws', async () => {
   assert.equal(await extractPlateImage(await zipOf({ '3D/3dmodel.model': 'x' }), { plate: 1 }), null);
   await assert.rejects(extractPlateImage(Buffer.from('not a zip')));
 });
+
+test("a plate's predicted time is read from slice_info.config, null for a plate it wasn't sliced for", async () => {
+  const { platePrediction } = require('../src/printFile');
+  const yazl = require('yazl');
+  const zip = new yazl.ZipFile();
+  zip.addBuffer(Buffer.from('<config><plate><metadata key="index" value="9"/><metadata key="prediction" value="8346"/></plate></config>'), 'Metadata/slice_info.config');
+  zip.end();
+  const chunks = [];
+  for await (const chunk of zip.outputStream) chunks.push(chunk);
+  const file = Buffer.concat(chunks);
+  assert.equal(await platePrediction(file, 9), 8346);
+  assert.equal(await platePrediction(file, 4), null);
+});
