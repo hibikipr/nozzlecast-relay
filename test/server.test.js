@@ -349,3 +349,51 @@ test('GET /cover/archive/:archiveId is a 503 when covers are not set up', async 
   const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
   assert.equal((await request(app).get('/cover/archive/1').set('Authorization', 'Bearer secret123')).status, 503);
 });
+
+// Bambuddy alert webhook, mute sync, status and photos.
+test('POST /bambuddy/alerts takes a large webhook body behind the relay secret and answers 202', async () => {
+  const received = [];
+  const alertForwarder = { receive: async (body) => { received.push(body); }, isActive: () => true, photo: () => null };
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', alertForwarder });
+  const body = { title: 'Print Completed', message: 'Vic H2C', event: 'print_complete', image: 'A'.repeat(2 * 1024 * 1024) };
+
+  assert.equal((await request(app).post('/bambuddy/alerts').send({ title: 't', message: 'm' })).status, 401);
+  const res = await request(app).post('/bambuddy/alerts').set('Authorization', 'Bearer secret123').send(body);
+  assert.equal(res.status, 202);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(received.length, 1);
+  assert.equal(received[0].image.length, 2 * 1024 * 1024);
+  assert.equal((await request(app).post('/bambuddy/alerts').set('Authorization', 'Bearer secret123').send({ text: 'slack' })).status, 400);
+});
+
+test('GET /alerts/status, PUT /muted-alerts and GET /alert-photo/:id', async () => {
+  const mutes = [];
+  const photo = { data: Buffer.from([0xff, 0xd8, 0xff]), contentType: 'image/jpeg' };
+  const alertForwarder = {
+    isActive: () => true,
+    setMutes: async (token, alerts) => { mutes.push([token, alerts]); },
+    photo: (id) => (id === 'p1' ? photo : null),
+  };
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', alertForwarder });
+  const auth = (req) => req.set('Authorization', 'Bearer secret123');
+
+  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: true });
+  assert.equal((await request(app).get('/alerts/status')).status, 401);
+
+  assert.equal((await auth(request(app).put('/muted-alerts')).send({ token: 'phone', alerts: [{ title: 't', body: 'b' }] })).status, 200);
+  assert.deepEqual(mutes, [['phone', [{ title: 't', body: 'b' }]]]);
+  assert.equal((await auth(request(app).put('/muted-alerts')).send({ alerts: [] })).status, 400);
+
+  const res = await auth(request(app).get('/alert-photo/p1'));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'image/jpeg');
+  assert.equal((await auth(request(app).get('/alert-photo/p2'))).status, 404);
+});
+
+test('alert routes without a forwarder: status inactive, the rest 503', async () => {
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
+  const auth = (req) => req.set('Authorization', 'Bearer secret123');
+  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: false });
+  assert.equal((await auth(request(app).post('/bambuddy/alerts')).send({ title: 't', message: 'm' })).status, 503);
+  assert.equal((await auth(request(app).put('/muted-alerts')).send({ token: 'p', alerts: [] })).status, 503);
+});

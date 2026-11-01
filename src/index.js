@@ -14,6 +14,7 @@ const { resolveCoverImage, MAX_COVER_IMAGE_ATTEMPTS } = require('./coverImageCac
 const { createServer } = require('./server');
 const { PrinterCoverService, CoverUnavailableError } = require('./printerCover');
 const { ArchiveCoverStore, ArchiveCoverService } = require('./archiveCovers');
+const { AlertForwarder } = require('./alertForwarder');
 const { BambuddyPoller } = require('./bambuddyPoller');
 const { PAUSE } = require('./printerStateClassifier');
 const { WakeRetryPolicy } = require('./wakeRetryPolicy');
@@ -606,8 +607,19 @@ async function main() {
   poller.start();
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 
+  // Bambuddy's alerts, through its Webhook provider, pushed to each device minus what it muted.
+  const alertForwarder = new AlertForwarder({
+    filePath: path.join(config.dataDir, 'alerts.json'),
+    deviceTokenStore,
+    apnsClients,
+    bundleId: config.apnsBundleId,
+    bambuddyClient,
+  });
+  await alertForwarder.load();
+  alertForwarder.startCatchUp();
+
   const app = createServer({
-    tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret, coverService, archiveCoverService, coverApiKey: config.coverApiKey,
+    tokenStore, deviceTokenStore, activityTokenStore, authSecret: config.relayAuthSecret, coverService, archiveCoverService, alertForwarder, coverApiKey: config.coverApiKey,
   });
   if (config.printerAccessCodes.size > 0) {
     console.log(`Covers Bambuddy can't find are read from the printer for ${config.printerAccessCodes.size} configured access code(s)`);
