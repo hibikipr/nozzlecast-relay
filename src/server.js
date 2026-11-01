@@ -55,9 +55,49 @@ function handleAsync(route, handler) {
   };
 }
 
-function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret, coverService = null, archiveCoverService = null, coverApiKey = null }) {
+function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSecret, coverService = null, archiveCoverService = null, alertForwarder = null, coverApiKey = null }) {
   const app = express();
-  app.use(express.json());
+  // Bambuddy's webhook carries the alert's photo as base64 in its body, far past express.json()'s
+  // 100 KB default; that route parses its own body with a higher limit.
+  const alertWebhookPath = '/bambuddy/alerts';
+  const parseJson = express.json();
+  app.use((req, res, next) => (req.path === alertWebhookPath ? next() : parseJson(req, res, next)));
+
+  // Bambuddy's alerts, from its Webhook notification provider (URL <relay>/bambuddy/alerts, the
+  // relay secret as its auth header): pushed to every registered device except the ones that
+  // muted it (see alertForwarder.js). Answers at once; the pushes go out after.
+  app.post(alertWebhookPath, requireAuth(authSecret), express.json({ limit: '25mb' }), (req, res) => {
+    if (!alertForwarder) return res.status(503).json({ error: 'alert forwarding is not set up on this relay' });
+    if (typeof req.body?.title !== 'string' || typeof req.body?.message !== 'string') {
+      return res.status(400).json({ error: 'invalid body: require title and message (Bambuddy webhook, generic format)' });
+    }
+    res.status(202).json({ ok: true });
+    alertForwarder.receive(req.body).catch((error) => console.error('Forwarding a Bambuddy alert failed:', error));
+  });
+
+  // Whether Bambuddy's webhook has reached this relay: NozzleCast stops receiving alerts through
+  // ntfy/Firebase once it has, so they don't arrive twice.
+  app.get('/alerts/status', requireAuth(authSecret), (req, res) => {
+    res.status(200).json({ active: Boolean(alertForwarder?.isActive()) });
+  });
+
+  // A device's muted alerts, replaced whole: { token, alerts: [{ title, body }] }.
+  app.put('/muted-alerts', requireAuth(authSecret), handleAsync('/muted-alerts', async (req, res) => {
+    if (!alertForwarder) return res.status(503).json({ error: 'alert forwarding is not set up on this relay' });
+    const { token, alerts } = req.body || {};
+    if (typeof token !== 'string' || !token || !Array.isArray(alerts)) {
+      return res.status(400).json({ error: 'invalid body: require token and alerts ([{ title, body }])' });
+    }
+    await alertForwarder.setMutes(token, alerts);
+    res.status(200).json({ ok: true });
+  }));
+
+  // A forwarded alert's photo, for the app's notification extension to attach. Kept a few hours.
+  app.get('/alert-photo/:id', requireAuth(authSecret), (req, res) => {
+    const photo = alertForwarder?.photo(req.params.id);
+    if (!photo) return res.status(404).json({ error: 'no such photo' });
+    res.set('Cache-Control', 'private, max-age=21600').type(photo.contentType).send(photo.data);
+  });
 
   // An archived print's cover, by Bambuddy archive id, for print history: a square JPEG of the
   // model on its contrast backdrop (see archiveCovers.js). 404 when there is none -- Bambuddy's own

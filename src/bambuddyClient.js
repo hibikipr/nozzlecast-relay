@@ -101,6 +101,13 @@ class BambuddyClient {
     return this._get(`/api/v1/archives/${encodeURIComponent(archiveId)}`);
   }
 
+  // GET /api/v1/notifications/logs?limit= -> the newest sends to every notification provider,
+  // newest first: [{ id, provider_id, provider_name, provider_type, event_type, title, message,
+  // success, error_message, printer_id, printer_name, created_at }]. Needs notifications:read.
+  async notificationLogs({ limit = 100 } = {}) {
+    return this._get(`/api/v1/notifications/logs?limit=${limit}`);
+  }
+
   // GET /api/v1/printers/{id}/camera/snapshot?token=... -> a live camera frame (JPEG).
   async cameraSnapshot(printerId, streamToken) {
     return this._getBinary(`/api/v1/printers/${printerId}/camera/snapshot?token=${encodeURIComponent(streamToken)}`);

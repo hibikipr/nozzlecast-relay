@@ -190,6 +190,29 @@ job's 3MF). Same auth as `GET /cover`; `ETag`/`If-None-Match` as above.
 - **Errors:** `404` when there's no cover (looked for again after a day), `400` for an id that isn't
   a positive whole number, `503` when covers aren't set up.
 
+### Bambuddy alerts: `POST /bambuddy/alerts`
+
+Bambuddy's alerts (print finished or failed, printer errors, maintenance due…) can come through
+the relay instead of ntfy and Firebase. The relay pushes each one to every NozzleCast device that
+registered with it, except the alerts that device muted. A muted alert never reaches the phone,
+which NozzleCast can't do on its own: iOS only lets it blank a push, not drop it.
+
+- **Setup in Bambuddy:** Settings → Notifications → add a **Webhook** provider. URL
+  `https://<relay>/bambuddy/alerts`, payload format **generic** with the default field names
+  (`title`, `message`), the relay's `RELAY_AUTH_SECRET` as its auth header, and the events you
+  want. Send a test: once the relay has received one, NozzleCast stops taking alerts from ntfy and
+  Firebase (`GET /alerts/status` says `active`), so nothing arrives twice. The ntfy provider can
+  then be turned off.
+- **Photos:** the webhook's camera photo is kept for six hours and fetched by the app's
+  notification extension (`GET /alert-photo/:id`, relay secret).
+- **Muting:** the app sends each device's muted alerts with `PUT /muted-alerts`
+  (`{ token, alerts: [{ title, body }] }`, matched exactly), kept in `DATA_DIR/alerts.json`.
+- **Missed alerts:** if the relay was down when Bambuddy sent an alert, Bambuddy logs that send as
+  failed. The relay reads Bambuddy's notification log every 5 minutes and pushes those it missed,
+  without their photo. It learns which provider is its own from the first alert delivered. This
+  needs the relay's Bambuddy API key to have `notifications:read`; without it, missed alerts aren't
+  caught up (logged once).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
