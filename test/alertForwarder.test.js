@@ -152,3 +152,22 @@ test("a key that can't read Bambuddy's log turns catch-up off quietly", async ()
   assert.equal(calls, 1);
   assert.equal(forwarder.state.providerId, null);
 });
+
+test('a large webhook photo is kept shrunk to fit 1280 px as JPEG', async () => {
+  const sharp = require('sharp');
+  const apns = fakeApns();
+  const { forwarder } = await freshForwarder({ deviceTokenStore: fakeDevices(['phone']), apnsClients: apns.clients });
+  // A 1920x1080 noisy frame, like an H2C chamber snapshot.
+  const pixels = Buffer.alloc(1920 * 1080 * 3);
+  for (let i = 0; i < pixels.length; i += 1) pixels[i] = (i * 2654435761) % 256;
+  const frame = await sharp(pixels, { raw: { width: 1920, height: 1080, channels: 3 } }).jpeg({ quality: 95 }).toBuffer();
+
+  await forwarder.receive({ title: 'Print 50% Complete', message: 'Vic H2C', image: frame.toString('base64') });
+  const photo = forwarder.photo(apns.sent[0].payload.nozzlecast.photoID);
+  const meta = await sharp(photo.data).metadata();
+  assert.equal(meta.format, 'jpeg');
+  assert.equal(meta.width, 1280);
+  assert.equal(meta.height, 720);
+  assert.ok(photo.data.length < frame.length);
+  assert.equal(photo.contentType, 'image/jpeg');
+});
