@@ -172,7 +172,10 @@ async function main() {
   // exact same JWT sent to api.push.apple.com got the normal token-tier 400 BadDeviceToken. So
   // each environment gets its own auth provider and client, selected per-token at send time
   // rather than assuming one key covers both.
-  const apnsClients = {
+  if (!config.apnsEnabled) {
+    console.log('No Apple push keys: alerts are served by polling (GET /alerts); Live Activities are off.');
+  }
+  const apnsClients = config.apnsEnabled ? {
     sandbox: new ApnsClient({
       authProvider: new ApnsAuthProvider({
         keyPath: config.apnsSandboxKeyPath,
@@ -191,7 +194,7 @@ async function main() {
       topic: config.apnsTopic,
       bundleId: config.apnsBundleId,
     }),
-  };
+  } : null;
 
   // Startup auth check, once per environment/key pair: send to a syntactically-valid-but-
   // nonexistent device token. A working key/kid/team-id combination gets a 400 BadDeviceToken
@@ -205,7 +208,7 @@ async function main() {
   // exit on a definitive, successfully-received 403 — an unambiguous "your credentials are
   // wrong" answer from Apple.
   const AUTH_CHECK_TIMEOUT_MS = 10000;
-  for (const environment of ['sandbox', 'production']) {
+  for (const environment of config.apnsEnabled ? ['sandbox', 'production'] : []) {
     try {
       const authCheckResult = await Promise.race([
         apnsClients[environment].send({
@@ -471,11 +474,14 @@ async function main() {
   // version, which was confirmed live to be a false-positive source (see the design doc's "HMS
   // error -> Error update: disabled after a real false positive" section) and has since been
   // superseded by this badge instead of just staying disabled.
+  // Without Apple push keys there are no Live Activities: every callback that pushes one is a
+  // no-op, and the poller runs only for onObserved (print-history covers).
+  const withPush = (callback) => (config.apnsEnabled ? callback : async () => {});
   const poller = new BambuddyPoller({
         bambuddyClient,
         intervalMs: config.bambuddyPollIntervalMs,
         correctionIntervalMs: config.liveActivityCorrectionIntervalMs,
-        onStart: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) => {
+        onStart: withPush(async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) => {
           // Reset the previous print's retry state before anything here can throw (a failed
           // activity-tokens.json write, say) -- otherwise a print whose onStart failed would
           // inherit the last print's used-up retry cap and never get a wake retry at all. The
@@ -495,13 +501,13 @@ async function main() {
           wakeRetries.startPrint(printerID, tokenDevices);
           console.log(`Push-to-start accepted for ${acceptedDevices} device(s) for printer "${name}" (${acceptedDevices - tokenDevices} on a broadcast channel) -- waiting for ${tokenDevices} activity token(s)`);
           await deleteChannels({ apnsClients, channels: previousChannels });
-        },
-        onPause: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId }),
-        onResume: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
-          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId }),
-        onFinish: async ({ printerID, name, status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
-          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }),
+        }),
+        onPause: withPush(async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Paused', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId })),
+        onResume: withPush(async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'update', stateLabel: 'Printing', printerID, name, prefetchedStatus: status, issueSeverity, issueCount, bambuddyPrinterId })),
+        onFinish: withPush(async ({ printerID, name, status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
+          sendActivityUpdate({ event: 'end', stateLabel: 'Complete', printerID, name, prefetchedStatus: status, priorProgress, issueSeverity, issueCount, bambuddyPrinterId })),
         // Bambuddy's own frontend (PrintersPage.tsx's classifyPrinterStatus) treats a bare
         // FAILED gcode_state with no HMS error attached as equivalent to FINISH for GROUPING
         // purposes (badge/dot color) -- including user-cancellations, which report as FAILED
@@ -513,7 +519,7 @@ async function main() {
         // succeeded -- for the common case (no real issue attached, i.e. a plain user stop or an
         // HMS-free failure); "Failed" is kept for when priorIssueSeverity shows a real qualifying
         // issue actually was confirmed active going into this transition.
-        onFailed: async ({ printerID, name, status, priorIssueSeverity, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
+        onFailed: withPush(async ({ printerID, name, status, priorIssueSeverity, priorProgress, issueSeverity, issueCount, bambuddyPrinterId }) =>
           sendActivityUpdate({
             event: 'end',
             stateLabel: priorIssueSeverity !== null ? 'Failed' : 'Stopped',
@@ -524,14 +530,14 @@ async function main() {
             issueSeverity,
             issueCount,
             bambuddyPrinterId,
-          }),
+          })),
         // Routine corrections go out at apns-priority 5. Every Live Activity push was priority 10,
         // and at this deploy's ~30s correction cadence that is hundreds of high-priority pushes
         // per device per print against liveactivitiesd's private on-device budget (see
         // ARCHITECTURE.md) -- the budget whose exhaustion silently drops pushes APNs accepted,
         // i.e. a Live Activity frozen mid-print. Apple's guidance is to use priority 5 for updates
         // that aren't time-sensitive; start/pause/resume/end keep 10 so they land immediately.
-        onCorrection: async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
+        onCorrection: withPush(async ({ printerID, name, status, issueSeverity, issueCount, bambuddyPrinterId }) =>
           sendActivityUpdate({
             event: 'update',
             stateLabel: status.state === PAUSE ? 'Paused' : 'Printing',
@@ -542,7 +548,7 @@ async function main() {
             issueCount,
             bambuddyPrinterId,
             priority: 5,
-          }),
+          })),
         // A print whose push-to-start went out without its cover (an HTTPS-dispatched job's 3MF still
         // downloading, say) gets it pushed as soon as the cover service can read it, rather than
         // with the next correction minutes later. Inside a failed lookup's backoff this costs
@@ -556,7 +562,7 @@ async function main() {
               if (!(error instanceof CoverUnavailableError)) console.error(`Saving the cover of printer "${printer.name}"'s print failed:`, error);
             });
         },
-        needsEarlyCorrection: async ({ printerID, status, printer }) => {
+        needsEarlyCorrection: withPush(async ({ printerID, status, printer }) => {
           const tracked = activityTokenStore.get(printerID);
           if (!tracked || tracked.coverImage || (tracked.coverImageFailures ?? 0) >= MAX_COVER_IMAGE_ATTEMPTS) return false;
           try {
@@ -565,11 +571,11 @@ async function main() {
           } catch {
             return false;
           }
-        },
+        }),
         // An active printer Bambuddy has been unable to reach for the poller's disconnect window:
         // end the activity rather than leave it frozen on its last reading. If the printer comes
         // back still printing, the poller reports a fresh start and a new activity goes out.
-        onDisconnected: async ({ printerID, name, status, priorProgress, bambuddyPrinterId }) =>
+        onDisconnected: withPush(async ({ printerID, name, status, priorProgress, bambuddyPrinterId }) =>
           sendActivityUpdate({
             event: 'end',
             stateLabel: 'Disconnected',
@@ -578,11 +584,11 @@ async function main() {
             prefetchedStatus: status,
             priorProgress,
             bambuddyPrinterId,
-          }),
+          })),
         // First reading after a (re)start with the printer idle/finished: if devices are still
         // registered for its activity, the print ended while the relay was down and no end push
         // ever went out. Send it now rather than leaving the Live Activity up until iOS expires it.
-        onBaselineInactive: async ({ printerID, name, status, bambuddyPrinterId }) => {
+        onBaselineInactive: withPush(async ({ printerID, name, status, bambuddyPrinterId }) => {
           if (activityTokenStore.tokensFor(printerID).length === 0 && activityTokenStore.activeChannelsFor(printerID).length === 0) return;
           console.log(`Printer "${name}" is ${status.state} at startup with an activity still registered -- sending the end push it missed`);
           await sendActivityUpdate({
@@ -593,23 +599,26 @@ async function main() {
             prefetchedStatus: status,
             bambuddyPrinterId,
           });
-        },
+        }),
   });
   // Channels APNs still holds that no tracked print references (a failed delete, a lost data
   // file). Finished before the poller starts: a print starting mid-cleanup would create a channel
   // that APNs lists but the store doesn't reference yet, and cleanup would delete it out from
   // under the new activity. Every APNs request is bounded by the client's timeout, so this can't
   // hang startup; deleteOrphanChannels never throws.
-  if (config.liveActivityChannels) {
+  if (config.apnsEnabled && config.liveActivityChannels) {
     await deleteOrphanChannels({ apnsClients, keep: activityTokenStore.allChannels() });
   }
 
   poller.start();
   console.log(`Polling Bambuddy every ${config.bambuddyPollIntervalMs}ms`);
 
-  // Bambuddy's alerts, through its Webhook provider, pushed to each device minus what it muted.
+  // Bambuddy's alerts, through its Webhook provider: pushed to each device minus what it muted,
+  // and kept in a feed the app fetches (the only way they reach it without Apple push keys).
   const alertForwarder = new AlertForwarder({
     filePath: path.join(config.dataDir, 'alerts.json'),
+    feedPath: path.join(config.dataDir, 'alert-feed.json'),
+    photoDir: path.join(config.dataDir, 'alert-photos'),
     deviceTokenStore,
     apnsClients,
     bundleId: config.apnsBundleId,
@@ -633,8 +642,8 @@ async function main() {
   const shutdown = () => {
     console.log('Shutting down...');
     poller.stop();
-    apnsClients.sandbox.close();
-    apnsClients.production.close();
+    apnsClients?.sandbox.close();
+    apnsClients?.production.close();
     server.close(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);

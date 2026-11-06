@@ -73,3 +73,16 @@ test('loadConfig reads PRINTER_ACCESS_CODES and COVER_API_KEY', () => {
   assert.equal(config.printerAccessCodes.get('vich2c'), '5678efgh');
   assert.equal(config.coverApiKey, 'display');
 });
+
+test('loadConfig runs without Apple push keys when none is set', () => {
+  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_SANDBOX_KEY_PATH, APNS_SANDBOX_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, ...withoutApns } = FULL_ENV;
+  const config = loadConfig(withoutApns);
+  assert.equal(config.apnsEnabled, false);
+  assert.equal(config.apnsTopic, null);
+  assert.equal(loadConfig(FULL_ENV).apnsEnabled, true);
+});
+
+test('loadConfig refuses Apple push keys set only in part', () => {
+  const { APNS_SANDBOX_KEY_ID, APNS_TEAM_ID, ...partial } = FULL_ENV;
+  assert.throws(() => loadConfig(partial), /missing APNS_SANDBOX_KEY_ID, APNS_TEAM_ID/);
+});

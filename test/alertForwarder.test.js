@@ -69,10 +69,10 @@ test("the webhook's photo is kept for the extension to fetch", async () => {
   await forwarder.receive({ title: 'Print Completed', message: 'Vic H2C', image: jpeg.toString('base64') });
   const { photoID } = apns.sent[0].payload.nozzlecast;
   assert.ok(photoID);
-  const photo = forwarder.photo(photoID);
+  const photo = await forwarder.photo(photoID);
   assert.deepEqual(photo.data, jpeg);
   assert.equal(photo.contentType, 'image/jpeg');
-  assert.equal(forwarder.photo('nope'), null);
+  assert.equal(await forwarder.photo('nope'), null);
 });
 
 test('a long alert is cut for the push and still matches a mute of the cut text', async () => {
@@ -163,11 +163,128 @@ test('a large webhook photo is kept shrunk to fit 1280 px as JPEG', async () => 
   const frame = await sharp(pixels, { raw: { width: 1920, height: 1080, channels: 3 } }).jpeg({ quality: 95 }).toBuffer();
 
   await forwarder.receive({ title: 'Print 50% Complete', message: 'Vic H2C', image: frame.toString('base64') });
-  const photo = forwarder.photo(apns.sent[0].payload.nozzlecast.photoID);
+  const photo = await forwarder.photo(apns.sent[0].payload.nozzlecast.photoID);
   const meta = await sharp(photo.data).metadata();
   assert.equal(meta.format, 'jpeg');
   assert.equal(meta.width, 1280);
   assert.equal(meta.height, 720);
   assert.ok(photo.data.length < frame.length);
   assert.equal(photo.contentType, 'image/jpeg');
+});
+
+// The feed: what the app fetches with GET /alerts (the only way alerts reach it without APNs).
+function feedForwarder(dir, options = {}) {
+  return new AlertForwarder({
+    filePath: path.join(dir, 'alerts.json'),
+    feedPath: path.join(dir, 'alert-feed.json'),
+    photoDir: path.join(dir, 'alert-photos'),
+    deviceTokenStore: fakeDevices([]),
+    apnsClients: null,
+    bundleId: null,
+    setTimeoutImpl: () => {},
+    ...options,
+  });
+}
+
+test('without Apple push keys an alert is kept in the feed, not pushed', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const forwarder = feedForwarder(dir);
+  await forwarder.load();
+  assert.equal(forwarder.pushesEnabled(), false);
+
+  assert.equal(await forwarder.receive({ title: MQTT_TITLE, message: MQTT_BODY, event: 'printer_error', printer: 'Sam P1S' }), 0);
+  assert.deepEqual(forwarder.feedFor('phone', null), { items: [], latestId: 1 });
+  const { items, latestId } = forwarder.feedFor('phone', 0);
+  assert.equal(latestId, 1);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, 1);
+  assert.equal(items[0].title, MQTT_TITLE);
+  assert.equal(items[0].body, MQTT_BODY);
+  assert.equal(items[0].printer, 'Sam P1S');
+  assert.equal(items[0].timeSensitive, true);
+  assert.equal(items[0].photoID, null);
+  assert.deepEqual(forwarder.feedFor('phone', 1).items, []);
+});
+
+test("the feed leaves out a device's muted alerts, for that device only", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const forwarder = feedForwarder(dir);
+  await forwarder.load();
+  await forwarder.setMutes('device-a', [{ title: MQTT_TITLE, body: MQTT_BODY }]);
+  await forwarder.receive({ title: MQTT_TITLE, message: MQTT_BODY, event: 'printer_error' });
+  await forwarder.receive({ title: 'Print Completed', message: 'Vic H2C', event: 'print_complete' });
+
+  assert.deepEqual(forwarder.feedFor('device-a', 0).items.map((item) => item.title), ['Print Completed']);
+  assert.deepEqual(forwarder.feedFor('device-b', 0).items.map((item) => item.title), [MQTT_TITLE, 'Print Completed']);
+  assert.equal(forwarder.feedFor('device-a', 0).items[0].timeSensitive, false);
+});
+
+test('a long alert in the feed is cut and still matches a mute of the cut text', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const forwarder = feedForwarder(dir);
+  await forwarder.load();
+  const long = 'x'.repeat(4000);
+  await forwarder.receive({ title: 'Long', message: long });
+  const [item] = forwarder.feedFor('phone', 0).items;
+  assert.equal(item.body.length, 1500);
+  await forwarder.setMutes('phone', [{ title: 'Long', body: item.body }]);
+  assert.deepEqual(forwarder.feedFor('phone', 0).items, []);
+});
+
+test('the feed and its photos survive a restart; old items and their photos are dropped', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  let clock = Date.UTC(2026, 10, 1);
+  const forwarder = feedForwarder(dir, { now: () => clock });
+  await forwarder.load();
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+  await forwarder.receive({ title: 'Print Completed', message: 'Vic H2C', image: jpeg.toString('base64') });
+  const [{ photoID }] = forwarder.feedFor('phone', 0).items;
+  assert.ok(photoID);
+
+  const restarted = feedForwarder(dir, { now: () => clock });
+  await restarted.load();
+  assert.equal(restarted.feedFor('phone', 0).items.length, 1);
+  assert.deepEqual((await restarted.photo(photoID)).data, jpeg);
+  assert.equal(await restarted.photo('../alerts'), null);
+
+  // Eight days on, the next alert pushes the old one (and its photo) out.
+  clock += 8 * 24 * 60 * 60 * 1000;
+  await restarted.receive({ title: 'Print Started', message: 'Vic H2C' });
+  assert.deepEqual(restarted.feedFor('phone', 0).items.map((item) => item.id), [2]);
+  assert.equal(await restarted.photo(photoID), null);
+  assert.deepEqual(await fs.readdir(path.join(dir, 'alert-photos')), []);
+});
+
+test('the feed keeps only its newest 200 alerts', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const forwarder = feedForwarder(dir);
+  await forwarder.load();
+  for (let i = 0; i < 205; i += 1) await forwarder.receive({ title: `Alert ${i}`, message: 'm' });
+  const { items, latestId } = forwarder.feedFor(null, 0);
+  assert.equal(items.length, 200);
+  assert.equal(items[0].id, 6);
+  assert.equal(latestId, 205);
+});
+
+test('alerts caught up from the log go into the feed too', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const rows = [{ id: 11, provider_id: 4, provider_type: 'webhook', success: false, title: 'Print Failed', message: 'Sam P1S', event_type: 'print_failed', printer_name: 'Sam P1S' }];
+  const forwarder = feedForwarder(dir, { bambuddyClient: { notificationLogs: async () => rows } });
+  await forwarder.load();
+  forwarder.state.providerId = 4;
+  forwarder.state.logCursor = 10;
+  assert.equal(await forwarder.catchUp(), 1);
+  const [item] = forwarder.feedFor('phone', 0).items;
+  assert.equal(item.title, 'Print Failed');
+  assert.equal(item.printer, 'Sam P1S');
+  assert.equal(item.timeSensitive, true);
+});
+
+test('with Apple push keys an alert is pushed and kept in the feed', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'alerts-'));
+  const apns = fakeApns();
+  const forwarder = feedForwarder(dir, { deviceTokenStore: fakeDevices(['phone']), apnsClients: apns.clients, bundleId: 'com.victormanuel.NozzleCast' });
+  await forwarder.load();
+  assert.equal(await forwarder.receive({ title: 'Print Completed', message: 'Vic H2C' }), 1);
+  assert.equal(forwarder.feedFor('phone', 0).items.length, 1);
 });

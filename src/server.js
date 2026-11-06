@@ -78,7 +78,21 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
   // Whether Bambuddy's webhook has reached this relay: NozzleCast stops receiving alerts through
   // ntfy/Firebase once it has, so they don't arrive twice.
   app.get('/alerts/status', requireAuth(authSecret), (req, res) => {
-    res.status(200).json({ active: Boolean(alertForwarder?.isActive()) });
+    // pushes: false on a relay without Apple push keys, where the app fetches GET /alerts instead.
+    res.status(200).json({ active: Boolean(alertForwarder?.isActive()), pushes: Boolean(alertForwarder?.pushesEnabled()) });
+  });
+
+  // The alerts received after `after` (a feed id), minus the ones `device` muted (the key it
+  // mutes under in PUT /muted-alerts). Without `after`, no items: only the id to continue from.
+  app.get('/alerts', requireAuth(authSecret), (req, res) => {
+    if (!alertForwarder) return res.status(503).json({ error: 'alert forwarding is not set up on this relay' });
+    let after = null;
+    if (req.query.after !== undefined) {
+      after = Number(req.query.after);
+      if (!Number.isInteger(after) || after < 0) return res.status(400).json({ error: 'after must be a non-negative integer' });
+    }
+    const device = typeof req.query.device === 'string' && req.query.device ? req.query.device : null;
+    res.status(200).json(alertForwarder.feedFor(device, after));
   });
 
   // A device's muted alerts, replaced whole: { token, alerts: [{ title, body }] }.
@@ -92,12 +106,12 @@ function createServer({ tokenStore, deviceTokenStore, activityTokenStore, authSe
     res.status(200).json({ ok: true });
   }));
 
-  // A forwarded alert's photo, for the app's notification extension to attach. Kept a few hours.
-  app.get('/alert-photo/:id', requireAuth(authSecret), (req, res) => {
-    const photo = alertForwarder?.photo(req.params.id);
+  // A forwarded alert's photo, for the app to attach. Kept with the feed (or a few hours in memory).
+  app.get('/alert-photo/:id', requireAuth(authSecret), handleAsync('/alert-photo', async (req, res) => {
+    const photo = alertForwarder ? await alertForwarder.photo(req.params.id) : null;
     if (!photo) return res.status(404).json({ error: 'no such photo' });
     res.set('Cache-Control', 'private, max-age=21600').type(photo.contentType).send(photo.data);
-  });
+  }));
 
   // An archived print's cover, by Bambuddy archive id, for print history: a square JPEG of the
   // model on its contrast backdrop (see archiveCovers.js). 404 when there is none -- Bambuddy's own
