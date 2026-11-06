@@ -115,8 +115,12 @@ class AlertForwarder {
   async photo(id) {
     if (typeof id !== 'string' || !PHOTO_ID_PATTERN.test(id)) return null;
     if (this.photoDir) {
+      // The id pattern already rules out "/" and "..", but the resolved file must stay in the folder.
+      const dir = path.resolve(this.photoDir);
+      const file = path.resolve(dir, `${id}.jpg`);
+      if (!file.startsWith(dir + path.sep)) return null;
       try {
-        const data = await fs.readFile(this.photoFile(id));
+        const data = await fs.readFile(file);
         return { data, contentType: imageContentType(data) };
       } catch (error) {
         if (error.code === 'ENOENT') return null;
