@@ -371,13 +371,14 @@ test('GET /alerts/status, PUT /muted-alerts and GET /alert-photo/:id', async () 
   const photo = { data: Buffer.from([0xff, 0xd8, 0xff]), contentType: 'image/jpeg' };
   const alertForwarder = {
     isActive: () => true,
+    pushesEnabled: () => true,
     setMutes: async (token, alerts) => { mutes.push([token, alerts]); },
-    photo: (id) => (id === 'p1' ? photo : null),
+    photo: async (id) => (id === 'p1' ? photo : null),
   };
   const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', alertForwarder });
   const auth = (req) => req.set('Authorization', 'Bearer secret123');
 
-  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: true });
+  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: true, pushes: true });
   assert.equal((await request(app).get('/alerts/status')).status, 401);
 
   assert.equal((await auth(request(app).put('/muted-alerts')).send({ token: 'phone', alerts: [{ title: 't', body: 'b' }] })).status, 200);
@@ -393,7 +394,27 @@ test('GET /alerts/status, PUT /muted-alerts and GET /alert-photo/:id', async () 
 test('alert routes without a forwarder: status inactive, the rest 503', async () => {
   const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123' });
   const auth = (req) => req.set('Authorization', 'Bearer secret123');
-  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: false });
+  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: false, pushes: false });
+  assert.equal((await auth(request(app).get('/alerts?after=0'))).status, 503);
   assert.equal((await auth(request(app).post('/bambuddy/alerts')).send({ title: 't', message: 'm' })).status, 503);
   assert.equal((await auth(request(app).put('/muted-alerts')).send({ token: 'p', alerts: [] })).status, 503);
+});
+
+test('GET /alerts passes the device and cursor through, behind the relay secret', async () => {
+  const calls = [];
+  const alertForwarder = {
+    isActive: () => true,
+    pushesEnabled: () => false,
+    feedFor: (device, after) => { calls.push([device, after]); return { items: [], latestId: 7 }; },
+  };
+  const app = createServer({ tokenStore: await freshStore(), authSecret: 'secret123', alertForwarder });
+  const auth = (req) => req.set('Authorization', 'Bearer secret123');
+
+  assert.equal((await request(app).get('/alerts?after=1')).status, 401);
+  assert.deepEqual((await auth(request(app).get('/alerts/status'))).body, { active: true, pushes: false });
+  assert.deepEqual((await auth(request(app).get('/alerts?after=3&device=phone-1'))).body, { items: [], latestId: 7 });
+  assert.equal((await auth(request(app).get('/alerts'))).status, 200);
+  assert.equal((await auth(request(app).get('/alerts?after=-1'))).status, 400);
+  assert.equal((await auth(request(app).get('/alerts?after=abc'))).status, 400);
+  assert.deepEqual(calls, [['phone-1', 3], [null, null]]);
 });

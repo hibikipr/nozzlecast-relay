@@ -2,14 +2,19 @@ const { parseAccessCodes } = require('./printerCover');
 
 const REQUIRED_VARS = [
   'RELAY_AUTH_SECRET',
+  'BAMBUDDY_URL',
+  'BAMBUDDY_API_KEY',
+];
+
+// Apple push keys: all of them or none. Without them the relay runs with no APNs at all: no Live
+// Activities, and Bambuddy's alerts are kept for the app to fetch (GET /alerts) rather than pushed.
+const APNS_VARS = [
   'APNS_KEY_PATH',
   'APNS_KEY_ID',
   'APNS_SANDBOX_KEY_PATH',
   'APNS_SANDBOX_KEY_ID',
   'APNS_TEAM_ID',
   'APNS_BUNDLE_ID',
-  'BAMBUDDY_URL',
-  'BAMBUDDY_API_KEY',
 ];
 
 function loadConfig(env = process.env) {
@@ -17,9 +22,16 @@ function loadConfig(env = process.env) {
   if (missing.length > 0) {
     throw new Error(`Missing required env vars: ${missing.join(', ')}`);
   }
+  const apnsSet = APNS_VARS.filter((key) => env[key]);
+  if (apnsSet.length > 0 && apnsSet.length < APNS_VARS.length) {
+    const apnsMissing = APNS_VARS.filter((key) => !env[key]);
+    throw new Error(`Apple push keys are set only in part: missing ${apnsMissing.join(', ')}. Set all of ${APNS_VARS.join(', ')}, or none to run without push.`);
+  }
+  const apnsEnabled = apnsSet.length === APNS_VARS.length;
 
   return {
     relayAuthSecret: env.RELAY_AUTH_SECRET,
+    apnsEnabled,
     // Apple APNs auth keys are ordinarily environment-agnostic (one key works against both
     // api.push.apple.com and api.sandbox.push.apple.com) -- but confirmed empirically against a
     // real deploy that this is not universally true: a key scoped to production got a 403
@@ -32,8 +44,8 @@ function loadConfig(env = process.env) {
     apnsSandboxKeyPath: env.APNS_SANDBOX_KEY_PATH,
     apnsSandboxKeyId: env.APNS_SANDBOX_KEY_ID,
     apnsTeamId: env.APNS_TEAM_ID,
-    apnsBundleId: env.APNS_BUNDLE_ID,
-    apnsTopic: `${env.APNS_BUNDLE_ID}.push-type.liveactivity`,
+    apnsBundleId: env.APNS_BUNDLE_ID || null,
+    apnsTopic: apnsEnabled ? `${env.APNS_BUNDLE_ID}.push-type.liveactivity` : null,
     // Recommended to be a dedicated, read-only Bambuddy API key (Bambuddy supports scoped keys
     // independent of print-control/queue permissions) -- the relay only ever reads printer
     // status to enrich a Live Activity, it never needs to control anything.

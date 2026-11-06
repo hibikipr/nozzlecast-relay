@@ -23,7 +23,7 @@ history: [push-to-start relay](docs/superpowers/specs/2026-09-02-push-to-start-r
 | Var | Purpose |
 |---|---|
 | `RELAY_AUTH_SECRET` | Bearer secret required on `/register` and `DELETE /register` |
-| `APNS_KEY_PATH` | Path to the mounted **production** Apple `.p8` auth key |
+| `APNS_KEY_PATH` | Path to the mounted **production** Apple `.p8` auth key. All six `APNS_*` vars are optional as a group: set all of them or none (see [Without Apple push keys](#without-apple-push-keys)) |
 | `APNS_KEY_ID` | Production APNs auth key ID |
 | `APNS_SANDBOX_KEY_PATH` | Path to the mounted **sandbox/development** Apple `.p8` auth key |
 | `APNS_SANDBOX_KEY_ID` | Sandbox APNs auth key ID |
@@ -45,6 +45,22 @@ production-scoped key's JWT got a 403 `BadEnvironmentKeyInToken` from the sandbo
 while the same JWT sent to the production host got a normal 400 `BadDeviceToken`. Create both a
 Production and a Development/Sandbox APNs auth key in your Apple Developer account if you don't
 already have both, and point the relay at each.
+
+### Without Apple push keys
+
+Leave every `APNS_*` var unset and the relay runs with no APNs at all, for anyone without an Apple
+Developer account's push keys (and without Firebase). What changes:
+
+- **Alerts are fetched, not pushed.** Bambuddy's webhook still goes to the relay
+  ([Bambuddy alerts](#bambuddy-alerts-post-bambuddyalerts)), mutes still apply, and NozzleCast
+  fetches new alerts with `GET /alerts`, posting them on the phone itself. Without a push, nothing
+  can wake the app the moment an alert fires: while NozzleCast is open, alerts show within
+  seconds; in the background they arrive when iOS next gives the app background time, which can
+  be 15 minutes to an hour or more later.
+- **No Live Activities.** They can only be started and updated by APNs pushes.
+- Covers and print-history covers work as before.
+
+Setting only some of the `APNS_*` vars is refused at startup, naming the missing ones.
 
 ## Running locally
 
@@ -206,12 +222,20 @@ which NozzleCast can't do on its own: iOS only lets it blank a push, not drop it
   want. Send a test: once the relay has received one, NozzleCast stops taking alerts from ntfy and
   Firebase (`GET /alerts/status` says `active`), so nothing arrives twice. The ntfy provider can
   then be turned off.
-- **Photos:** the webhook's camera photo is kept for six hours and fetched by the app's
-  notification extension (`GET /alert-photo/:id`, relay secret).
+- **Photos:** the webhook's camera photo is shrunk, kept in `DATA_DIR/alert-photos` with the
+  feed, and fetched by the app (`GET /alert-photo/:id`, relay secret).
+- **Feed:** every alert is also kept (the newest 200, up to 7 days) in `DATA_DIR/alert-feed.json`.
+  `GET /alerts?after=<id>&device=<key>` (relay secret) returns
+  `{ items: [{ id, receivedAt, title, body, event, printer, photoID, timeSensitive }], latestId }`:
+  the alerts after `after`, minus the ones `device` muted. Without `after`, `items` is empty and
+  `latestId` is where to continue from, so a new device doesn't replay old alerts. This is how
+  alerts reach NozzleCast on a relay [without Apple push keys](#without-apple-push-keys);
+  `GET /alerts/status` says `pushes: false` there.
 - **Muting:** the app sends each device's muted alerts with `PUT /muted-alerts`
   (`{ token, alerts: [{ title, body }] }`, matched exactly), kept in `DATA_DIR/alerts.json`.
+  `token` is the device's APNs token, or a generated id on a device without push.
 - **Missed alerts:** if the relay was down when Bambuddy sent an alert, Bambuddy logs that send as
-  failed. The relay reads Bambuddy's notification log every 5 minutes and pushes those it missed,
+  failed. The relay reads Bambuddy's notification log every 5 minutes and pushes (and keeps) those it missed,
   without their photo. It learns which provider is its own from the first alert delivered. This
   needs the relay's Bambuddy API key to have `notifications:read`; without it, missed alerts aren't
   caught up (logged once).

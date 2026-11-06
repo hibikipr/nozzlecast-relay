@@ -1,4 +1,6 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const sharp = require('sharp');
 const { AtomicJsonFile } = require('./atomicJsonFile');
 
@@ -14,6 +16,11 @@ const { AtomicJsonFile } = require('./atomicJsonFile');
 // down. The relay learns which provider is its own from the log row Bambuddy writes after a
 // delivered alert, then re-sends that provider's failed rows it hasn't handled (without a photo:
 // the log has none).
+//
+// Feed: every alert is also kept (the last FEED_MAX_ITEMS, for FEED_TTL_MS) for the app to fetch
+// with GET /alerts, minus what that device muted. On a relay without Apple push keys that is the
+// only way alerts reach the phone: the app checks while it's open and when iOS gives it background
+// time. A device is whatever key the app mutes under: its APNs token, or a generated id without one.
 
 const PHOTO_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_PHOTOS = 100;
@@ -27,6 +34,9 @@ const TIME_SENSITIVE_EVENTS = new Set([
   'print_failed', 'printer_error', 'ai_failure_detection', 'plate_not_empty', 'printer_offline',
 ]);
 // How long after a webhook delivery Bambuddy's log row for it is looked for.
+const FEED_MAX_ITEMS = 200;
+const FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PHOTO_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const PROVIDER_LEARN_DELAY_MS = 20 * 1000;
 const CATCH_UP_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -41,10 +51,15 @@ function imageContentType(buffer) {
 
 class AlertForwarder {
   constructor({
-    filePath, deviceTokenStore, apnsClients, bundleId, bambuddyClient = null, now = Date.now,
-    setTimeoutImpl = setTimeout,
+    filePath, feedPath = null, photoDir = null, deviceTokenStore, apnsClients, bundleId,
+    bambuddyClient = null, now = Date.now, setTimeoutImpl = setTimeout,
   }) {
     this.file = new AtomicJsonFile(filePath);
+    this.feedFile = feedPath ? new AtomicJsonFile(feedPath) : null;
+    // Photos go to disk when there's a folder for them, so a device that fetches the feed hours
+    // later (or after a restart) still gets them; otherwise they're kept in memory for PHOTO_TTL_MS.
+    this.photoDir = photoDir;
+    this.feed = { nextId: 1, items: [] };
     this.deviceTokenStore = deviceTokenStore;
     this.apnsClients = apnsClients;
     this.bundleId = bundleId;
@@ -59,6 +74,14 @@ class AlertForwarder {
   async load() {
     const saved = await this.file.read();
     if (saved && typeof saved === 'object') this.state = { ...this.state, ...saved };
+    const feed = this.feedFile ? await this.feedFile.read() : null;
+    if (feed && Number.isInteger(feed.nextId) && Array.isArray(feed.items)) this.feed = feed;
+    if (this.photoDir) await fs.mkdir(this.photoDir, { recursive: true });
+  }
+
+  // Whether alerts go out as APNs pushes: not on a relay without Apple push keys.
+  pushesEnabled() {
+    return Boolean(this.apnsClients);
   }
 
   save() {
@@ -85,7 +108,21 @@ class AlertForwarder {
     return (this.state.mutes[token] ?? []).some((alert) => alert.title === title && alert.body === body);
   }
 
-  photo(id) {
+  photoFile(id) {
+    return path.join(this.photoDir, `${id}.jpg`);
+  }
+
+  async photo(id) {
+    if (typeof id !== 'string' || !PHOTO_ID_PATTERN.test(id)) return null;
+    if (this.photoDir) {
+      try {
+        const data = await fs.readFile(this.photoFile(id));
+        return { data, contentType: imageContentType(data) };
+      } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }
+    }
     const entry = this.photos.get(id);
     if (!entry) return null;
     if (entry.expiresAt <= this.now()) {
@@ -115,11 +152,18 @@ class AlertForwarder {
     } catch {
       // Not an image sharp can decode: stored unchanged.
     }
+    const id = crypto.randomUUID();
+    if (this.photoDir) {
+      // Written whole, then renamed, so a fetch never reads half a photo. Pruned with the feed.
+      const tmp = `${this.photoFile(id)}.tmp`;
+      await fs.writeFile(tmp, data);
+      await fs.rename(tmp, this.photoFile(id));
+      return id;
+    }
     for (const [id, entry] of this.photos) {
       if (entry.expiresAt <= this.now()) this.photos.delete(id);
     }
     while (this.photos.size >= MAX_PHOTOS) this.photos.delete(this.photos.keys().next().value);
-    const id = crypto.randomUUID();
     this.photos.set(id, { data, contentType: imageContentType(data), expiresAt: this.now() + PHOTO_TTL_MS });
     return id;
   }
@@ -137,18 +181,72 @@ class AlertForwarder {
     if (firstSeen) await this.save();
 
     const photoID = typeof body.image === 'string' ? await this.storePhoto(body.image) : null;
-    const sent = await this.forward({ title, message, event: body.event ?? null, printer: body.printer ?? null, photoID });
+    const alert = { title, message, event: body.event ?? null, printer: body.printer ?? null, photoID };
+    await this.record(alert);
+    const sent = await this.forward(alert);
     if (this.state.providerId === null && this.bambuddyClient) this.learnProviderSoon(title, message);
     return sent;
   }
 
+  // The app mutes the text it was shown, which is the truncated one for a very long alert.
+  isMutedFor(device, title, message) {
+    return this.isMuted(device, title, message) || this.isMuted(device, title, truncated(message, MAX_BODY_CHARS));
+  }
+
+  // Keeps an alert in the feed, dropping what's past FEED_MAX_ITEMS or FEED_TTL_MS (and its photo).
+  async record({ title, message, event, printer, photoID = null }) {
+    const item = {
+      id: this.feed.nextId,
+      receivedAt: new Date(this.now()).toISOString(),
+      title,
+      message,
+      event,
+      printer,
+      photoID,
+    };
+    this.feed.nextId += 1;
+    this.feed.items.push(item);
+    const oldest = this.now() - FEED_TTL_MS;
+    const dropped = [];
+    while (this.feed.items.length > FEED_MAX_ITEMS || (this.feed.items.length > 0 && Date.parse(this.feed.items[0].receivedAt) < oldest)) {
+      dropped.push(this.feed.items.shift());
+    }
+    if (this.feedFile) await this.feedFile.write(() => this.feed);
+    if (this.photoDir) {
+      for (const old of dropped) {
+        if (old.photoID) await fs.rm(this.photoFile(old.photoID), { force: true });
+      }
+    }
+    return item;
+  }
+
+  // A device's alerts newer than `after`, minus the ones it muted. Without `after` (a device's
+  // first check) nothing is replayed: it gets only the id to continue from.
+  feedFor(device, after) {
+    const latestId = this.feed.nextId - 1;
+    if (after === null || after === undefined) return { items: [], latestId };
+    const items = this.feed.items
+      .filter((item) => item.id > after && !(device && this.isMutedFor(device, item.title, item.message)))
+      .map((item) => ({
+        id: item.id,
+        receivedAt: item.receivedAt,
+        title: item.title,
+        body: truncated(item.message, MAX_BODY_CHARS),
+        event: item.event,
+        printer: item.printer,
+        photoID: item.photoID,
+        timeSensitive: TIME_SENSITIVE_EVENTS.has(item.event),
+      }));
+    return { items, latestId };
+  }
+
   // Pushes one alert to every registered device that hasn't muted it. Returns how many got it.
   async forward({ title, message, event, printer, photoID = null }) {
+    if (!this.pushesEnabled()) return 0;
     const body = truncated(message, MAX_BODY_CHARS);
     let sent = 0;
     for (const entry of this.deviceTokenStore.list()) {
-      // The app mutes the text it was shown, which is the truncated one for a very long alert.
-      if (this.isMuted(entry.token, title, message) || this.isMuted(entry.token, title, body)) continue;
+      if (this.isMutedFor(entry.token, title, message)) continue;
       const client = this.apnsClients[entry.environment] || this.apnsClients.production;
       const payload = {
         aps: {
@@ -211,7 +309,9 @@ class AlertForwarder {
     this.state.logCursor = Math.max(cursor, ...rows.map((row) => row.id));
     await this.save();
     for (const row of missed) {
-      await this.forward({ title: row.title, message: row.message, event: row.event_type, printer: row.printer_name ?? null });
+      const alert = { title: row.title, message: row.message, event: row.event_type, printer: row.printer_name ?? null };
+      await this.record(alert);
+      await this.forward(alert);
     }
     if (missed.length > 0) console.log(`Caught up ${missed.length} Bambuddy alert(s) the relay missed`);
     return missed.length;
