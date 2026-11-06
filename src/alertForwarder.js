@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const sharp = require('sharp');
 const { AtomicJsonFile } = require('./atomicJsonFile');
 
 // Bambuddy's alerts, received from its Webhook notification provider and pushed to every
@@ -16,6 +17,9 @@ const { AtomicJsonFile } = require('./atomicJsonFile');
 
 const PHOTO_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_PHOTOS = 100;
+// Alert photos are kept within this size (px) at this JPEG quality: see storePhoto.
+const PHOTO_MAX_DIMENSION = 1280;
+const PHOTO_JPEG_QUALITY = 72;
 // Keeps a push well inside APNs' 4 KB payload limit.
 const MAX_BODY_CHARS = 1500;
 // Events whose alert should break through a Focus, as ntfy's priority 4/5 did.
@@ -91,7 +95,10 @@ class AlertForwarder {
     return entry;
   }
 
-  storePhoto(base64) {
+  // Kept shrunk: an H2C chamber frame is 1080p at 300-600 KB, slow for the notification
+  // extension on a mobile connection. Within PHOTO_MAX_DIMENSION as JPEG it's around 100 KB and
+  // looks the same in a notification. A photo sharp can't read is kept as it came.
+  async storePhoto(base64) {
     let data;
     try {
       data = Buffer.from(base64, 'base64');
@@ -99,6 +106,15 @@ class AlertForwarder {
       return null;
     }
     if (data.length === 0) return null;
+    try {
+      data = await sharp(data)
+        .rotate()
+        .resize(PHOTO_MAX_DIMENSION, PHOTO_MAX_DIMENSION, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: PHOTO_JPEG_QUALITY, mozjpeg: true })
+        .toBuffer();
+    } catch {
+      // Not an image sharp can decode: stored unchanged.
+    }
     for (const [id, entry] of this.photos) {
       if (entry.expiresAt <= this.now()) this.photos.delete(id);
     }
@@ -120,7 +136,7 @@ class AlertForwarder {
     this.state.webhookSeenAt = new Date(this.now()).toISOString();
     if (firstSeen) await this.save();
 
-    const photoID = typeof body.image === 'string' ? this.storePhoto(body.image) : null;
+    const photoID = typeof body.image === 'string' ? await this.storePhoto(body.image) : null;
     const sent = await this.forward({ title, message, event: body.event ?? null, printer: body.printer ?? null, photoID });
     if (this.state.providerId === null && this.bambuddyClient) this.learnProviderSoon(title, message);
     return sent;
