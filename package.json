@@ -18,7 +18,7 @@
     "replay": "node scripts/replay-run.js"
   },
   "dependencies": {
-    "basic-ftp": "^6.2.3",
+    "basic-ftp": "^6.2.6",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "sharp": "^0.35.4",
