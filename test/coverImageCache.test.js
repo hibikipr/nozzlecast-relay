@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { ActivityTokenStore } = require('../src/activityTokenStore');
-const { resolveCoverImage, MAX_COVER_IMAGE_ATTEMPTS } = require('../src/coverImageCache');
+const { resolveCoverImage, settleWithin, TIMED_OUT, MAX_COVER_IMAGE_ATTEMPTS } = require('../src/coverImageCache');
 
 async function storeWithPrint() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nozzlecast-relay-test-'));
@@ -67,4 +67,42 @@ test('a new print gets fresh attempts', async () => {
   await resolveCoverImage({ activityTokenStore: store, printerID: 'p', name: 'P', fetchCover });
 
   assert.equal(fetchCover.calls, MAX_COVER_IMAGE_ATTEMPTS + 1);
+});
+
+test('a cover still loading after waitMs is skipped for this update without counting a failure', async () => {
+  const store = await storeWithPrint();
+  let finish;
+  const slow = () => new Promise((resolve) => { finish = resolve; });
+
+  const startedAt = Date.now();
+  assert.equal(await resolveCoverImage({ activityTokenStore: store, printerID: 'p', name: 'P', fetchCover: slow, waitMs: 20 }), null);
+  assert.ok(Date.now() - startedAt < 1000, 'the update did not wait for the slow fetch');
+  assert.equal(store.get('p').coverImageFailures ?? 0, 0);
+
+  finish('LATE');
+  const ready = countingFetch('BASE64COVER');
+  assert.equal(await resolveCoverImage({ activityTokenStore: store, printerID: 'p', name: 'P', fetchCover: ready, waitMs: 20 }), 'BASE64COVER');
+});
+
+test('a slow cover fetch that fails after the deadline does not surface as an unhandled rejection', async () => {
+  const store = await storeWithPrint();
+  let fail;
+  const slow = () => new Promise((resolve, reject) => { fail = reject; });
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    assert.equal(await resolveCoverImage({ activityTokenStore: store, printerID: 'p', name: 'P', fetchCover: slow, waitMs: 10 }), null);
+    fail(new Error('FTPS gave up'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('settleWithin passes through a value or rejection that arrives in time', async () => {
+  assert.equal(await settleWithin(Promise.resolve('ok'), 50), 'ok');
+  await assert.rejects(settleWithin(Promise.reject(new Error('boom')), 50), /boom/);
+  assert.equal(await settleWithin(new Promise(() => {}), 10), TIMED_OUT);
 });
