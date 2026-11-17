@@ -34,7 +34,7 @@ test('getToken returns a JWT with the documented ES256 header and claims', () =>
   assert.equal(verified.iat, Math.floor(currentTime / 1000));
 });
 
-test('getToken reuses the cached token within the 20-minute window', () => {
+test('getToken reuses the cached token for well past 20 minutes (Apple 429s refreshes more often)', () => {
   const { privateKey } = generateTestKeyPair();
   let currentTime = 1_700_000_000_000;
   const provider = new ApnsAuthProvider({
@@ -46,12 +46,12 @@ test('getToken reuses the cached token within the 20-minute window', () => {
   });
 
   const first = provider.getToken();
-  currentTime += 10 * 60 * 1000; // +10 minutes
+  currentTime += 45 * 60 * 1000; // +45 minutes
   const second = provider.getToken();
   assert.equal(first, second);
 });
 
-test('getToken regenerates once 20 minutes have elapsed', () => {
+test('getToken regenerates once 50 minutes have elapsed, inside the 60-minute limit Apple sets', () => {
   const { privateKey } = generateTestKeyPair();
   let currentTime = 1_700_000_000_000;
   const provider = new ApnsAuthProvider({
@@ -63,7 +63,7 @@ test('getToken regenerates once 20 minutes have elapsed', () => {
   });
 
   const first = provider.getToken();
-  currentTime += 20 * 60 * 1000 + 1; // +20 minutes and 1ms
+  currentTime += 50 * 60 * 1000 + 1; // +50 minutes and 1ms
   const second = provider.getToken();
   assert.notEqual(first, second);
 });

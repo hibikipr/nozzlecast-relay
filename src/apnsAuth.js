@@ -1,7 +1,10 @@
 const fs = require('node:fs');
 const jwt = require('jsonwebtoken');
 
-const TOKEN_LIFETIME_MS = 20 * 60 * 1000;
+// Apple takes a provider token for up to 60 minutes and refuses refreshes more often than every
+// 20 (429 TooManyProviderTokenUpdates). Refreshing at exactly 20 sat on that edge and hit the 429
+// on 2026-11-17; 50 leaves margin both ways.
+const TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
 class ApnsAuthProvider {
   constructor({ keyPath, keyId, teamId, now = () => Date.now(), readKeyFile = (path) => fs.readFileSync(path, 'utf8') }) {

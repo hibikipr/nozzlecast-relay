@@ -10,7 +10,7 @@ const { BambuddyClient } = require('./bambuddyClient');
 const { PrinterIdCache } = require('./printerIdCache');
 const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = require('./bambuddyEnrichment');
 const { downscaleCover } = require('./imageDownscale');
-const { resolveCoverImage, MAX_COVER_IMAGE_ATTEMPTS } = require('./coverImageCache');
+const { resolveCoverImage, settleWithin, TIMED_OUT, MAX_COVER_IMAGE_ATTEMPTS, COVER_WAIT_MS } = require('./coverImageCache');
 const { createServer } = require('./server');
 const { PrinterCoverService, CoverUnavailableError } = require('./printerCover');
 const { ArchiveCoverStore, ArchiveCoverService } = require('./archiveCovers');
@@ -565,9 +565,10 @@ async function main() {
         needsEarlyCorrection: withPush(async ({ printerID, status, printer }) => {
           const tracked = activityTokenStore.get(printerID);
           if (!tracked || tracked.coverImage || (tracked.coverImageFailures ?? 0) >= MAX_COVER_IMAGE_ATTEMPTS) return false;
+          // Bounded like the push's own wait: a lookup still running (a slow FTPS read) answers
+          // "not yet" and keeps going, rather than holding up this tick for every printer.
           try {
-            await coverService.cover(printer, { status });
-            return true;
+            return await settleWithin(coverService.cover(printer, { status }), COVER_WAIT_MS) !== TIMED_OUT;
           } catch {
             return false;
           }

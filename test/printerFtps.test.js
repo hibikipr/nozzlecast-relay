@@ -63,3 +63,20 @@ test('a failed login throws, and the connection is still closed', async () => {
   await assert.rejects(downloadPrintFile({ host: 'h', accessCode: 'bad', subtaskName: 'X', createClient: () => client }), /530/);
   assert.deepEqual(client.log.at(-1), ['close']);
 });
+
+test('a transfer that keeps going past deadlineMs is abandoned and the connection closed', async () => {
+  const client = fakeClient({ dirs: { '/cache': [{ name: 'Slow.3mf', size: 4 }] } });
+  client.downloadTo = (sink, path) => {
+    client.log.push(['download', path]);
+    return new Promise((resolve, reject) => {
+      // basic-ftp rejects a transfer in progress once its socket is closed.
+      const close = client.close;
+      client.close = () => { close(); reject(new Error('socket closed')); };
+    });
+  };
+  await assert.rejects(
+    downloadPrintFile({ host: '192.168.3.96', accessCode: 'code', subtaskName: 'Slow', deadlineMs: 20, createClient: () => client }),
+    /took over 0.02s, gave up/,
+  );
+  assert.ok(client.log.some(([op]) => op === 'close'));
+});

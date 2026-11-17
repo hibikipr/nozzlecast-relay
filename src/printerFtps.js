@@ -5,6 +5,10 @@ const { PRINT_FILE_DIRS, findPrintFile } = require('./printFile');
 const DEFAULT_TIMEOUT_MS = 20000;
 // A 3MF past this is not worth pulling over the printer's Wi-Fi for one cover image.
 const DEFAULT_MAX_BYTES = 200 * 1024 * 1024;
+// The whole read, start to finish. timeoutMs is basic-ftp's idle timeout, so a transfer that keeps
+// trickling never trips it: a P1S took 8m45s for one 3MF on 2026-11-17. Callers no longer wait on
+// this (see COVER_WAIT_MS), so it's generous; it only stops a read that would otherwise never end.
+const DEFAULT_DEADLINE_MS = 10 * 60 * 1000;
 
 // Downloads the 3MF a printer is printing straight from the printer, over the implicit FTPS it
 // serves on port 990 (user "bblp", the LAN access code). This is the path for the prints Bambuddy
@@ -22,48 +26,63 @@ const DEFAULT_MAX_BYTES = 200 * 1024 * 1024;
 // connection or transfer failure.
 async function downloadPrintFile({
   host, accessCode, subtaskName,
-  timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, createClient = (timeout) => new ftp.Client(timeout),
+  timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, deadlineMs = DEFAULT_DEADLINE_MS,
+  createClient = (timeout) => new ftp.Client(timeout),
 }) {
   const client = createClient(timeoutMs);
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`reading the print file from ${host} took over ${deadlineMs / 1000}s, gave up`));
+      client.close(); // aborts the transfer still in progress
+    }, deadlineMs);
+  });
+  const work = transfer({ client, accessCode, host, subtaskName, maxBytes });
+  work.catch(() => {}); // after the deadline its rejection (the closed socket) has nobody waiting
   try {
-    await client.access({
-      host,
-      port: 990,
-      user: 'bblp',
-      password: accessCode,
-      secure: 'implicit',
-      secureOptions: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
-    });
-
-    const listings = {};
-    for (const dir of PRINT_FILE_DIRS) {
-      try {
-        listings[dir] = await client.list(dir);
-      } catch {
-        // No such directory on this model (no SD card, no /data): search the others.
-      }
-    }
-    const file = findPrintFile(listings, subtaskName);
-    if (!file) return null;
-    if (file.size > maxBytes) {
-      throw new Error(`${file.path} is ${file.size} bytes, over the ${maxBytes}-byte cover download limit`);
-    }
-
-    const chunks = [];
-    let received = 0;
-    const sink = new Writable({
-      write(chunk, encoding, callback) {
-        received += chunk.length;
-        if (received > maxBytes) return callback(new Error(`${file.path} grew past the ${maxBytes}-byte cover download limit`));
-        chunks.push(chunk);
-        callback();
-      },
-    });
-    await client.downloadTo(sink, file.path);
-    return { path: file.path, data: Buffer.concat(chunks), modifiedAt: file.modifiedAt };
+    return await Promise.race([work, deadline]);
   } finally {
+    clearTimeout(timer);
     client.close();
   }
+}
+
+async function transfer({ client, host, accessCode, subtaskName, maxBytes }) {
+  await client.access({
+    host,
+    port: 990,
+    user: 'bblp',
+    password: accessCode,
+    secure: 'implicit',
+    secureOptions: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
+  });
+
+  const listings = {};
+  for (const dir of PRINT_FILE_DIRS) {
+    try {
+      listings[dir] = await client.list(dir);
+    } catch {
+      // No such directory on this model (no SD card, no /data): search the others.
+    }
+  }
+  const file = findPrintFile(listings, subtaskName);
+  if (!file) return null;
+  if (file.size > maxBytes) {
+    throw new Error(`${file.path} is ${file.size} bytes, over the ${maxBytes}-byte cover download limit`);
+  }
+
+  const chunks = [];
+  let received = 0;
+  const sink = new Writable({
+    write(chunk, encoding, callback) {
+      received += chunk.length;
+      if (received > maxBytes) return callback(new Error(`${file.path} grew past the ${maxBytes}-byte cover download limit`));
+      chunks.push(chunk);
+      callback();
+    },
+  });
+  await client.downloadTo(sink, file.path);
+  return { path: file.path, data: Buffer.concat(chunks), modifiedAt: file.modifiedAt };
 }
 
 module.exports = { downloadPrintFile };
