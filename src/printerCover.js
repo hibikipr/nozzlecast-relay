@@ -1,4 +1,6 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { normalizedID } = require('./parsing');
 const { downloadPrintFile } = require('./printerFtps');
 const { extractPlateImage, plateFromGcodeFile } = require('./printFile');
@@ -14,6 +16,45 @@ const MAX_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
 const NOT_READY_RETRY_MS = 10 * 1000;
 
 class CoverUnavailableError extends Error {}
+
+function etagOf(png) {
+  return `"${crypto.createHash('sha256').update(png).digest('hex').slice(0, 32)}"`;
+}
+
+// Each printer's last cover, on disk, so a restart doesn't throw it away. Without it, the first
+// request after a restart looked the job up again -- and for a job Bambuddy has no 3MF for (an
+// HTTPS-dispatched print), that means reaching the printer over FTPS, which a sleeping printer may
+// not answer: the cover the app showed that morning was gone until a later retry got through.
+// One small JSON file per printer and view, replaced atomically.
+class PrinterCoverStore {
+  constructor(dir) {
+    this.dir = dir;
+  }
+
+  file(slot) {
+    return path.join(this.dir, `${encodeURIComponent(slot)}.json`);
+  }
+
+  // { jobKey, jobName, printerId, source, png } or null when there's none or it can't be read.
+  async get(slot) {
+    try {
+      const { png, ...meta } = JSON.parse(await fs.readFile(this.file(slot), 'utf8'));
+      if (typeof png !== 'string' || typeof meta.jobKey !== 'string') return null;
+      return { ...meta, png: Buffer.from(png, 'base64') };
+    } catch (error) {
+      if (error.code !== 'ENOENT') console.log(`Stored cover ${slot} is unreadable, ignoring it: ${error.message}`);
+      return null;
+    }
+  }
+
+  async save(slot, { jobKey, jobName, printerId, source, png }) {
+    await fs.mkdir(this.dir, { recursive: true });
+    const target = this.file(slot);
+    const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(temp, JSON.stringify({ jobKey, jobName, printerId, source, png: png.toString('base64') }));
+    await fs.rename(temp, target);
+  }
+}
 // The job's file is on the printer but can't be opened yet -- it is still being written.
 class CoverNotReadyError extends CoverUnavailableError {}
 
@@ -41,7 +82,7 @@ function parseAccessCodes(value) {
 // it. Concurrent requests for the same job share one lookup.
 class PrinterCoverService {
   constructor({
-    bambuddyClient, accessCodes = new Map(), downloadFile = downloadPrintFile, now = Date.now,
+    bambuddyClient, accessCodes = new Map(), downloadFile = downloadPrintFile, now = Date.now, store = null,
   }) {
     this.bambuddyClient = bambuddyClient;
     this.accessCodes = accessCodes;
@@ -50,6 +91,9 @@ class PrinterCoverService {
     this.images = new Map(); // `${printerKey}|${view}` -> { jobKey, png, source, etag }
     this.failures = new Map(); // `${printerKey}|${view}` -> { jobKey, count, retryAt, reason }
     this.inflight = new Map(); // jobKey -> Promise
+    this.store = store; // PrinterCoverStore, or null to keep covers in memory only
+    this.loadedSlots = new Set(); // slots already read back from the store since starting
+    this.saving = Promise.resolve(); // the latest write to the store, for tests to wait on
   }
 
   // A printer by normalized name or serial, from Bambuddy's printer list. Listed fresh on every
@@ -81,6 +125,7 @@ class PrinterCoverService {
     // A job that finishes drops its gcode_file from Bambuddy's status ("" from then on) but is
     // still the same job, so its cover stays. Looking it up again right then is what failed: the
     // cover was there all print long and gone (404, then backoff) the moment it finished.
+    await this.loadStored(slot);
     const cached = this.images.get(slot);
     if (cached?.jobKey === jobKey || (!gcodeFile && cached?.jobName === jobName && cached?.printerId === printer.id)) {
       return { ...cached, jobName };
@@ -107,11 +152,24 @@ class PrinterCoverService {
     return { ...await lookup, jobName };
   }
 
+  // Once per slot after a start: the cover saved before the restart, if any, so the cache check
+  // that follows treats it like one found this run.
+  async loadStored(slot) {
+    if (!this.store || this.images.has(slot) || this.loadedSlots.has(slot)) return;
+    this.loadedSlots.add(slot);
+    const stored = await this.store.get(slot);
+    if (stored && !this.images.has(slot)) this.images.set(slot, { ...stored, etag: etagOf(stored.png) });
+  }
+
   recordImage(slot, image) {
-    const etag = `"${crypto.createHash('sha256').update(image.png).digest('hex').slice(0, 32)}"`;
-    const stored = { ...image, etag };
+    const stored = { ...image, etag: etagOf(image.png) };
     this.images.set(slot, stored);
     this.failures.delete(slot);
+    if (this.store) {
+      this.saving = this.store.save(slot, stored).catch((error) => {
+        console.log(`Couldn't save the cover for ${slot}: ${error.message}`);
+      });
+    }
     return stored;
   }
 
@@ -162,4 +220,4 @@ class PrinterCoverService {
   }
 }
 
-module.exports = { PrinterCoverService, CoverUnavailableError, CoverNotReadyError, parseAccessCodes };
+module.exports = { PrinterCoverService, PrinterCoverStore, CoverUnavailableError, CoverNotReadyError, parseAccessCodes };

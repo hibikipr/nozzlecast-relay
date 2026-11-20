@@ -12,7 +12,7 @@ const { enrichmentFromStatus, isRemainingTimeTrustworthy, filterStageDetail } = 
 const { downscaleCover } = require('./imageDownscale');
 const { resolveCoverImage, settleWithin, TIMED_OUT, MAX_COVER_IMAGE_ATTEMPTS, COVER_WAIT_MS } = require('./coverImageCache');
 const { createServer } = require('./server');
-const { PrinterCoverService, CoverUnavailableError } = require('./printerCover');
+const { PrinterCoverService, PrinterCoverStore, CoverUnavailableError } = require('./printerCover');
 const { ArchiveCoverStore, ArchiveCoverService } = require('./archiveCovers');
 const { AlertForwarder } = require('./alertForwarder');
 const { BambuddyPoller } = require('./bambuddyPoller');
@@ -63,7 +63,12 @@ async function main() {
 
   const bambuddyClient = new BambuddyClient({ baseUrl: config.bambuddyUrl, apiKey: config.bambuddyApiKey });
   const printerIdCache = new PrinterIdCache({ bambuddyClient });
-  const coverService = new PrinterCoverService({ bambuddyClient, accessCodes: config.printerAccessCodes });
+  // Each printer's last cover is kept on disk too, so a restart doesn't lose it (see printerCover.js).
+  const coverService = new PrinterCoverService({
+    bambuddyClient,
+    accessCodes: config.printerAccessCodes,
+    store: new PrinterCoverStore(path.join(config.dataDir, 'printer-covers')),
+  });
   // Each print's cover kept by Bambuddy archive id, for print history (see archiveCovers.js).
   const archiveCoverService = new ArchiveCoverService({
     store: new ArchiveCoverStore(path.join(config.dataDir, 'archive-covers')),

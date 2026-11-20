@@ -196,6 +196,9 @@ A past print's cover by its Bambuddy archive id, for print history: a 256×256 J
 its contrast backdrop. For the prints Bambuddy archived without a thumbnail (it has none without the
 job's 3MF). Same auth as `GET /cover`; `ETag`/`If-None-Match` as above.
 
+- **Each printer's last cover** is also kept in `DATA_DIR/printer-covers` (one file per printer),
+  so after a restart the relay serves it straight away instead of asking Bambuddy and the printer
+  again — a sleeping printer may not answer for a while.
 - **Saved as the print runs:** while a printer prints, the relay saves its cover under the archive
   Bambuddy made for that print, in `DATA_DIR/archive-covers/<archiveId>.jpg` (tens of KB each, the
   oldest removed past 3000).
