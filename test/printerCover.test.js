@@ -240,3 +240,65 @@ test('a 3MF still being written is retried after 10 s without growing the backof
   clock = 20 * 1000;
   assert.equal((await service.cover(H2C)).png.toString(), 'nutcrackers');
 });
+
+// --- Each printer's last cover kept on disk ---------------------------------------------------
+
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { PrinterCoverStore } = require('../src/printerCover');
+
+async function tempStore() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'printer-covers-'));
+  return { dir, store: new PrinterCoverStore(dir) };
+}
+
+test('a cover found is kept on disk and served after a restart without asking Bambuddy or the printer', async () => {
+  const { store } = await tempStore();
+  const first = new PrinterCoverService({ bambuddyClient: fakeBambuddy(), store });
+  const before = await first.cover(H2C);
+  await first.saving;
+
+  let downloads = 0;
+  const bambuddy = fakeBambuddy({ cover: async () => { throw new Error('Bambuddy should not be asked'); } });
+  const restarted = new PrinterCoverService({
+    bambuddyClient: bambuddy, store, accessCodes: parseAccessCodes('Vic H2C:code'),
+    downloadFile: async () => { downloads += 1; },
+  });
+  const after = await restarted.cover(H2C);
+  assert.equal(after.png.toString(), 'bambuddy png');
+  assert.equal(after.etag, before.etag);
+  assert.equal(after.jobName, 'LOVE');
+  assert.equal(bambuddy.calls.cover, 0);
+  assert.equal(downloads, 0);
+});
+
+test("a stored cover for an earlier job isn't used for a new one", async () => {
+  const { store } = await tempStore();
+  const first = new PrinterCoverService({ bambuddyClient: fakeBambuddy(), store });
+  await first.cover(H2C);
+  await first.saving;
+
+  const bambuddy = fakeBambuddy({ cover: async () => Buffer.from('new job png'), status: { subtask_name: 'OREO', gcode_file: null } });
+  const restarted = new PrinterCoverService({ bambuddyClient: bambuddy, store });
+  const cover = await restarted.cover(H2C);
+  assert.equal(cover.png.toString(), 'new job png');
+  assert.equal(bambuddy.calls.cover, 1);
+  await restarted.saving;
+  const third = new PrinterCoverService({ bambuddyClient: fakeBambuddy({ status: { subtask_name: 'OREO', gcode_file: null } }), store });
+  assert.equal((await third.cover(H2C)).png.toString(), 'new job png');
+});
+
+test('an unreadable stored cover is ignored and the job is looked up as usual', async () => {
+  const { dir, store } = await tempStore();
+  await fs.writeFile(path.join(dir, `${encodeURIComponent('31b8ap610800367|default')}.json`), '{not json');
+  const bambuddy = fakeBambuddy();
+  const service = new PrinterCoverService({ bambuddyClient: bambuddy, store });
+  assert.equal((await service.cover(H2C)).png.toString(), 'bambuddy png');
+  assert.equal(bambuddy.calls.cover, 1);
+});
+
+test('without a store, covers stay in memory only', async () => {
+  const service = new PrinterCoverService({ bambuddyClient: fakeBambuddy() });
+  assert.equal((await service.cover(H2C)).source, 'bambuddy');
+});
